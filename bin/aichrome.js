@@ -1,47 +1,47 @@
 #!/usr/bin/env node
-// cpilot: drive Chrome from the terminal, or serve it to any AI over MCP.
+// aichrome: drive Chrome from the terminal, or serve it to any AI over MCP.
 import fs from 'node:fs';
 import path from 'node:path';
 import { HOST_NAME, HOME, CLI, EXTENSION_DIR, nativeHostDirs } from '../src/paths.js';
 import { TOOLS } from '../src/tools.js';
 
-const HELP = `cpilot: control Chrome from your terminal (AI in Chrome)
+const HELP = `aichrome: control Chrome from your terminal (AI in Chrome)
 
 Setup
-  cpilot install               register the native host with Chrome (run once)
-  cpilot status                check the connection to Chrome
-  cpilot mcp                   run as an MCP server (stdio) for any AI client
+  aichrome install               register the native host with Chrome (run once)
+  aichrome status                check the connection to Chrome
+  aichrome mcp                   run as an MCP server (stdio) for any AI client
 
 Shortcuts
-  cpilot tabs                  list tabs                        (tabs_context)
-  cpilot open <url>            open a new tab in the AI group (tabs_create)
-  cpilot select <tabId>        make a tab current               (tabs_select)
-  cpilot go <url|back|forward|reload>                           (navigate)
-  cpilot shot [-o file.jpg]    screenshot                       (computer screenshot)
-  cpilot read [interactive]    accessibility tree with refs     (read_page)
-  cpilot find <words>          find elements                    (find)
-  cpilot text                  page text                        (get_page_text)
-  cpilot click <ref_N | x y>   left click                       (computer left_click)
-  cpilot type <text>           type text into focused element   (computer type)
-  cpilot key <keys>            e.g. Enter, cmd+a, "Tab Tab Enter" (computer key)
-  cpilot scroll [up|down|left|right] [ticks]
-  cpilot fill <ref_N> <value>  set a form field                 (form_input)
-  cpilot js <code>             evaluate JavaScript              (javascript_tool)
-  cpilot console | network     captured console / network logs
-  cpilot upload <ref> <file>…  put local files into a file input (file_upload)
-  cpilot upload-image <shot_N|file> <ref>   image into a file input or drop zone (upload_image)
-  cpilot record start|stop|clear            GIF recording (gif_creator)
-  cpilot record export [-o file.gif]        save the GIF (default ~/Downloads)
-  cpilot reload-extension      reload the extension after code changes
+  aichrome tabs                  list tabs                        (tabs_context)
+  aichrome open <url>            open a new tab in the AI group (tabs_create)
+  aichrome select <tabId>        make a tab current               (tabs_select)
+  aichrome go <url|back|forward|reload>                           (navigate)
+  aichrome shot [-o file.jpg]    screenshot                       (computer screenshot)
+  aichrome read [interactive]    accessibility tree with refs     (read_page)
+  aichrome find <words>          find elements                    (find)
+  aichrome text                  page text                        (get_page_text)
+  aichrome click <ref_N | x y>   left click                       (computer left_click)
+  aichrome type <text>           type text into focused element   (computer type)
+  aichrome key <keys>            e.g. Enter, cmd+a, "Tab Tab Enter" (computer key)
+  aichrome scroll [up|down|left|right] [ticks]
+  aichrome fill <ref_N> <value>  set a form field                 (form_input)
+  aichrome js <code>             evaluate JavaScript              (javascript_tool)
+  aichrome console | network     captured console / network logs
+  aichrome upload <ref> <file>…  put local files into a file input (file_upload)
+  aichrome upload-image <shot_N|file> <ref>   image into a file input or drop zone (upload_image)
+  aichrome record start|stop|clear            GIF recording (gif_creator)
+  aichrome record export [-o file.gif]        save the GIF (default ~/Downloads)
+  aichrome reload-extension      reload the extension after code changes
 
 Fast mode (one process, no startup cost per command)
-  cpilot run "click ref_3; type hello; key Enter"
-  cpilot shell                 interactive prompt; also reads commands from a pipe
+  aichrome run "click ref_3; type hello; key Enter"
+  aichrome shell                 interactive prompt; also reads commands from a pipe
 
 Any tool, with raw arguments
-  cpilot <tool> key=value ...  values are parsed as JSON when possible
-  cpilot <tool> --json '{"action":"left_click","coordinate":[100,200]}'
-  cpilot tools                 list tools and their arguments
+  aichrome <tool> key=value ...  values are parsed as JSON when possible
+  aichrome <tool> --json '{"action":"left_click","coordinate":[100,200]}'
+  aichrome tools                 list tools and their arguments
 
 Global options
   --tab <id>                   target a specific tab
@@ -111,7 +111,7 @@ function install() {
   fs.mkdirSync(HOME, { recursive: true, mode: 0o700 });
   // Chrome launches this wrapper; it pins the node binary used at install time.
   const wrapper = path.join(HOME, 'native-host.sh');
-  fs.writeFileSync(wrapper, `#!/bin/sh\n# AI in Chrome native host (generated by cpilot install)\nexec "${node}" "${CLI}" host "$@"\n`, { mode: 0o755 });
+  fs.writeFileSync(wrapper, `#!/bin/sh\n# AI in Chrome native host (generated by aichrome install)\nexec "${node}" "${CLI}" host "$@"\n`, { mode: 0o755 });
   fs.chmodSync(wrapper, 0o755);
 
   const manifest = {
@@ -131,7 +131,7 @@ function install() {
   console.log(`Native host registered for: ${written.join(', ') || '(no Chromium browsers found)'}`);
   console.log(`Extension ID: ${extId}`);
   console.log(`\nNext:\n  1. chrome://extensions → enable Developer mode → Load unpacked → ${EXTENSION_DIR}`);
-  console.log(`  2. cpilot status`);
+  console.log(`  2. aichrome status`);
   console.log(`  3. (optional) claude mcp add --scope user chrome-pilot -- "${node}" "${CLI}" mcp`);
 }
 
@@ -200,7 +200,7 @@ async function execute(argv, callTool) {
 
   let [tool, args] = resolveCommand(cmd, pos);
   if (!args) {
-    if (!TOOLS.some((t) => t.name === tool)) throw new Error(`Unknown command "${cmd}". Run \`cpilot help\`.`);
+    if (!TOOLS.some((t) => t.name === tool)) throw new Error(`Unknown command "${cmd}". Run \`aichrome help\`.`);
     args = {};
   }
   Object.assign(args, opts);
@@ -222,7 +222,7 @@ async function runScript(commands, callTool, { stopOnError = true } = {}) {
     try {
       await execute(splitArgs(line), callTool);
     } catch (e) {
-      console.error(`cpilot: ${line}: ${e.message}`);
+      console.error(`aichrome: ${line}: ${e.message}`);
       if (stopOnError) process.exit(1);
     }
   }
@@ -255,6 +255,6 @@ async function main() {
 }
 
 main().catch((e) => {
-  console.error(`cpilot: ${e.message}`);
+  console.error(`aichrome: ${e.message}`);
   process.exit(1);
 });

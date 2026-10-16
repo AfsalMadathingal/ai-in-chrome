@@ -1,5 +1,5 @@
 // Local-file handling done on this side of the bridge: the extension can't read your disk,
-// and cpilot runs on your machine, so it reads upload paths and saves exported files.
+// and aichrome runs on your machine, so it reads upload paths and saves exported files.
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

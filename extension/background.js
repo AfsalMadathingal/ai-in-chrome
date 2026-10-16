@@ -45,7 +45,7 @@ function connect() {
 function setBadge(on) {
   chrome.action.setBadgeText({ text: on ? '' : 'off' });
   chrome.action.setBadgeBackgroundColor({ color: '#b3261e' });
-  chrome.action.setTitle({ title: on ? 'AI in Chrome: connected' : 'AI in Chrome: host not connected (run `cpilot install`)' });
+  chrome.action.setTitle({ title: on ? 'AI in Chrome: connected' : 'AI in Chrome: host not connected (run `aichrome install`)' });
 }
 
 const chunks = new Map(); // request id -> string[]
@@ -476,7 +476,7 @@ async function gif_creator({ action, tabId, download, coordinate, filename, opti
         const out = await dropFile(id, { x, y }, gif.base64, name, 'image/gif');
         return `${summary}. ${out} Recording cleared.`;
       }
-      // Default: hand the file back to cpilot, which saves it locally.
+      // Default: hand the file back to aichrome, which saves it locally.
       return { text: `${summary}. Recording cleared.`, file: { name, mimeType: 'image/gif', data: gif.base64 } };
     }
     default:
@@ -538,7 +538,7 @@ const base64Bytes = (b64) => Math.floor((b64.length * 3) / 4) - (b64.endsWith('=
 
 async function file_upload({ tabId, ref, files }) {
   if (!ref) throw new Error('ref of the <input type="file"> is required (find it with read_page or find)');
-  if (!Array.isArray(files) || !files.length) throw new Error('files is required (cpilot fills it from `paths`)');
+  if (!Array.isArray(files) || !files.length) throw new Error('files is required (aichrome fills it from `paths`)');
   let total = 0;
   for (const f of files) {
     if (typeof f.data !== 'string' || !f.name) throw new Error('each file needs `data` (base64) and `name`');

@@ -4,7 +4,7 @@ import { prepareArgs, saveFile } from './files.js';
 
 const NOT_CONNECTED =
   'AI in Chrome is not connected. Make sure Chrome is running with the AI in Chrome extension loaded, ' +
-  'and that you ran `cpilot install` once. Clicking the extension icon forces a reconnect.';
+  'and that you ran `aichrome install` once. Clicking the extension icon forces a reconnect.';
 
 // Call a tool: local file paths are read here, and returned files (e.g. GIFs) are saved here.
 export async function callTool(tool, args = {}, opts = {}) {

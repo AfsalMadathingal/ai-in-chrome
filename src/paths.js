@@ -3,12 +3,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const HOST_NAME = 'com.chrome_pilot.bridge';
-export const HOME = process.env.CPILOT_HOME || path.join(os.homedir(), '.chrome-pilot');
+export const HOME = process.env.AICHROME_HOME || path.join(os.homedir(), '.chrome-pilot');
 export const SOCKET = path.join(HOME, 'bridge.sock');
 export const LOG_FILE = path.join(HOME, 'host.log');
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const EXTENSION_DIR = path.join(ROOT, 'extension');
-export const CLI = path.join(ROOT, 'bin', 'cpilot.js');
+export const CLI = path.join(ROOT, 'bin', 'aichrome.js');
 
 // Where Chromium-family browsers look for per-user native messaging host manifests.
 export function nativeHostDirs() {
