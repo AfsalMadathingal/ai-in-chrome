@@ -2,7 +2,8 @@
 // aichrome: drive Chrome from the terminal, or serve it to any AI over MCP.
 import fs from 'node:fs';
 import path from 'node:path';
-import { HOST_NAME, HOME, CLI, EXTENSION_DIR, nativeHostDirs } from '../src/paths.js';
+import os from 'node:os';
+import { HOST_NAME, HOME, CLI, ROOT, EXTENSION_DIR, nativeHostDirs } from '../src/paths.js';
 import { TOOLS } from '../src/tools.js';
 
 const HELP = `aichrome: control Chrome from your terminal (AI in Chrome)
@@ -11,6 +12,7 @@ Setup
   aichrome install               register the native host with Chrome (run once)
   aichrome status                check the connection to Chrome
   aichrome mcp                   run as an MCP server (stdio) for any AI client
+  aichrome install-skill [dir]   install the AI usage guide as a skill (default ~/.claude/skills)
 
 Shortcuts
   aichrome tabs                  list tabs                        (tabs_context)
@@ -133,6 +135,17 @@ function install() {
   console.log(`\nNext:\n  1. chrome://extensions → enable Developer mode → Load unpacked → ${EXTENSION_DIR}`);
   console.log(`  2. aichrome status`);
   console.log(`  3. (optional) claude mcp add --scope user ai-in-chrome -- "${node}" "${CLI}" mcp`);
+  console.log(`  4. (optional) aichrome install-skill   # AI usage guide as a Claude Code skill`);
+}
+
+// Copy the AI usage guide (SKILL.md) into a skills folder, e.g. Claude Code's ~/.claude/skills.
+function installSkill(dir) {
+  const src = path.join(ROOT, 'skills', 'ai-in-chrome', 'SKILL.md');
+  const base = dir ? path.resolve(dir.replace(/^~(?=$|\/)/, os.homedir())) : path.join(os.homedir(), '.claude', 'skills');
+  const dest = path.join(base, 'ai-in-chrome', 'SKILL.md');
+  fs.mkdirSync(path.dirname(dest), { recursive: true });
+  fs.copyFileSync(src, dest);
+  console.log(`Installed skill: ${dest}`);
 }
 
 function printTools() {
@@ -236,6 +249,7 @@ async function main() {
   if (cmd === 'mcp') return (await import('../src/mcp.js')).runMcp();
   if (cmd === 'install') return install();
   if (cmd === 'tools') return printTools();
+  if (cmd === 'install-skill') return installSkill(argv[1]);
 
   const { callTool } = await import('../src/client.js');
   if (cmd === 'run') return runScript(splitCommands(argv.slice(1).join(' ')), callTool);

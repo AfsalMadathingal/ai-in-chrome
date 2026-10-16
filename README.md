@@ -1,70 +1,104 @@
 # AI in Chrome
 
-Control your real Chrome from the terminal, or hand it to any AI over MCP. It works the same way Claude in Chrome does (CDP via `chrome.debugger`, accessibility tree with `ref_N` element refs, a native-messaging bridge, a tab group and an on-page indicator), but with no login and no cloud.
+Control your **real, logged-in Chrome** from the terminal, or hand it to **any AI** over MCP (Claude Code, Codex, Cursor, Gemini CLI, Claude Desktop…). No login, no cloud, no API key.
+
+It controls the browser the same way Claude in Chrome does:
+- the Chrome DevTools Protocol through `chrome.debugger`;
+- an accessibility tree with `ref_N` element refs;
+- a native-messaging bridge;
+- an agent tab group and an on-page indicator.
 
 ```
-aichrome CLI / any MCP client ──► ~/.ai-in-chrome/bridge.sock ──► native host (launched by Chrome) ──► extension ──► CDP ──► tab
+aichrome CLI / any MCP client ──► ~/.ai-in-chrome/bridge.sock ──► native host (started by Chrome) ──► extension ──► DevTools Protocol ──► tab
 ```
 
-## Setup (once)
-
-Requires Node.js 20+ and macOS or Linux, with Chrome, Brave, Edge, Arc or Chromium.
+## Quick start
 
 ```bash
-git clone https://github.com/AfsalMadathingal/ai-in-chrome.git
-cd ai-in-chrome
-npm link                # puts `aichrome` on PATH (no dependencies to install)
-aichrome install          # registers the native host with Chrome/Brave/Edge/Arc/Chromium
+git clone https://github.com/AfsalMadathingal/ai-in-chrome.git && cd ai-in-chrome
+npm link            # `aichrome` command, zero dependencies
+aichrome install    # register the bridge with Chrome / Brave / Edge / Arc / Chromium
 ```
 
-Then go to `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and pick the `extension/` folder. Check with `aichrome status`.
-
-If the extension icon shows an **off** badge, the host isn't connected. Click the icon to retry.
-
-## Terminal use (no AI)
+Then go to `chrome://extensions`, turn on **Developer mode**, click **Load unpacked**, and select `extension/`. Check with:
 
 ```bash
-aichrome open example.com          # new tab in the "AI" group
-aichrome read interactive          # elements with refs
-aichrome click ref_3               # click by ref …
-aichrome shot -o page.jpg          # … or take a screenshot
-aichrome click 640 300             # and click by screenshot pixel
+aichrome status
+```
+
+Full guide, AI client setup and troubleshooting: **[INSTALL.md](INSTALL.md)**.
+
+## Use it yourself (no AI)
+
+```bash
+aichrome open example.com            # new tab in the purple "AI" group
+aichrome read interactive            # elements with refs:  button "More information…" [ref_1]
+aichrome click ref_1                 # click by ref…
+aichrome shot -o page.jpg            # …or take a screenshot
+aichrome click 640 300               # and click by screenshot pixel
 aichrome type "hello"; aichrome key Enter
-aichrome fill ref_5 "me@example.com"
+aichrome fill ref_5 "me@example.com" # inputs, selects, checkboxes
+aichrome upload ref_7 ~/cv.pdf       # into <input type=file>, no file picker
 aichrome js "document.title"
-aichrome computer --json '{"action":"scroll","scroll_direction":"down","scroll_amount":5}'
-aichrome upload ref_7 ~/cv.pdf ~/photo.jpg      # files into an <input type=file> (no file picker)
-aichrome upload-image shot_3 ref_7               # a screenshot (by image ID) or image file into an input / drop zone
-aichrome record start; …actions…; aichrome record stop; aichrome record export -o demo.gif
-aichrome tools                     # every tool and argument
+aichrome record start … aichrome record export -o demo.gif
 ```
 
-Fast mode: one process, so no ~60 ms Node startup per command:
+Several steps in one process (fastest):
 
 ```bash
-aichrome run "open example.com; read interactive; click ref_3; type hello; key Enter"
-aichrome shell                     # interactive prompt (or pipe commands in)
+aichrome run "open example.com; read interactive; click ref_1"
+aichrome shell                       # interactive prompt, or pipe commands in
 ```
 
-## Any AI (MCP)
+Run `aichrome help` for every shortcut, and `aichrome tools` for every tool and argument.
 
+## Use it with AI
+
+**Claude Code**
 ```bash
-claude mcp add --scope user ai-in-chrome -- node /path/to/ai-in-chrome/bin/aichrome.js mcp
+claude mcp add --scope user ai-in-chrome -- "$(which node)" "$(pwd)/bin/aichrome.js" mcp
+aichrome install-skill               # teaches Claude how to use it well
 ```
 
-Other clients (Codex, Cursor, Gemini CLI, …): use the same command, `node …/bin/aichrome.js mcp`, as a stdio MCP server. Any agent that can run shell commands can also just call `aichrome`.
+**Other MCP clients:** add a stdio server with command `node` and args `["/path/to/ai-in-chrome/bin/aichrome.js", "mcp"]`. Config snippets for Codex, Cursor, Gemini CLI and Claude Desktop are in [INSTALL.md](INSTALL.md#5-connect-an-ai-optional).
+
+**Any agent with a shell:** it can call `aichrome …` directly.
+
+**AI guide:** [`skills/ai-in-chrome/SKILL.md`](skills/ai-in-chrome/SKILL.md) tells an AI how to install, connect, and drive the browser reliably: refs, uploads, safety with real accounts, and speed tips. Give it to any agent, or install it as a Claude Code skill with `aichrome install-skill`.
 
 ## Tools
 
-`tabs_context`, `tabs_create`, `tabs_select`, `tabs_close`, `navigate`, `computer` (screenshot, left/right/double/triple_click, hover, left_click_drag, type, key, scroll, scroll_to, wait, zoom), `read_page`, `find`, `form_input`, `get_page_text`, `javascript_tool`, `read_console_messages`, `read_network_requests`, `resize_window`, `cdp_command` (raw CDP escape hatch), `extension_reload`, `gif_creator` (start_recording / stop_recording / export / clear), `file_upload` (local `paths` or base64 `files`, 10 MB max), `upload_image` (screenshot `imageId` or local `path`, to a `ref` or a drop `coordinate`).
+| Tool | What it does |
+|---|---|
+| `tabs_context`, `tabs_create`, `tabs_select`, `tabs_close` | List, open (in the AI group), switch and close tabs |
+| `navigate` | Go to a URL, or `back` / `forward` / `reload` |
+| `computer` | `screenshot`, `left_click`, `right_click`, `double_click`, `triple_click`, `hover`, `left_click_drag`, `type`, `key`, `scroll`, `scroll_to`, `wait`, `zoom` |
+| `read_page`, `find` | Accessibility tree with `ref_N` refs; find elements by words |
+| `form_input` | Set text fields, selects, checkboxes and radios by ref |
+| `get_page_text`, `javascript_tool` | Readable page text; run JavaScript in the page |
+| `read_console_messages`, `read_network_requests` | Captured console output, errors, dialogs and requests |
+| `file_upload`, `upload_image` | Local files or screenshots into file inputs or drop zones (10 MB max) |
+| `gif_creator` | Record actions and export an annotated GIF |
+| `resize_window`, `cdp_command`, `extension_reload` | Window size, raw DevTools Protocol, reload the extension |
+
+## How it works
+
+- **Extension** (`extension/`): an MV3 service worker. It runs tools through `chrome.debugger` (CDP): input events, screenshots, JS, console and network. Content scripts build the ref tree and draw the on-page indicator. An offscreen page encodes GIFs with [gif.js](https://github.com/jnordberg/gif.js) (MIT, in `extension/vendor/`).
+- **Native host** (`src/host.js`): Chrome starts it via native messaging when the extension loads. It relays requests between the extension and a Unix socket, splitting large ones into chunks to fit Chrome's 1 MB message limit.
+- **`aichrome`** (`bin/`, `src/`): the CLI, the MCP server, and the local file handling (it reads upload paths and saves GIFs).
+
+## Security
+
+- The socket `~/.ai-in-chrome/bridge.sock` is `0600` inside a `0700` folder, so only your user account can drive the browser.
+- Chrome only allows the extension ID in the host manifest (`nknkkmpocjbicnfhkgkgiiemkddajodl`, fixed by the manifest `key`) to start the bridge.
+- Nothing leaves your machine. The AI you connect sees what the tools return (page text, screenshots), so only connect AIs you trust with your browser.
 
 ## Notes
 
-- Security: the socket is `0600` in a `0700` directory, so only your user can drive the browser. Chrome only lets the extension ID in the host manifest (`nknkkmpocjbicnfhkgkgiiemkddajodl`, fixed by the manifest `key`) talk to the host.
-- Chrome shows a "AI in Chrome started debugging this browser" bar while it controls a tab. That's the `chrome.debugger` API, same as the original.
-- Console and network capture start when AI in Chrome first attaches to a tab.
-- Host log: `~/.ai-in-chrome/host.log`.
-- GIF exports are saved by `aichrome` (default `~/Downloads`, or `-o` / `save_path`); `download: true` uses Chrome's downloads instead. gif.js (MIT) is vendored in `extension/vendor/`.
-- Uploads are read from disk by `aichrome` on your machine; requests over 1 MB are chunked (Chrome's native-messaging limit).
-- After editing extension code: `aichrome reload-extension`.
-- Paste (`cmd+v`) may not work: Chrome restricts clipboard access from synthetic input. Use `type` instead.
+- While AI in Chrome controls a tab, Chrome shows a "started debugging this browser" bar. That's the `chrome.debugger` API at work.
+- Console and network capture start when it first attaches to a tab.
+- `chrome://` pages and the Chrome Web Store can't be automated.
+- Paste (`cmd+v`) may not work from synthetic input. Use `type` instead.
+- After editing extension code: `aichrome reload-extension`. After moving the folder or changing Node: `aichrome install`.
+- Logs: `~/.ai-in-chrome/host.log`.
+- Platforms: macOS and Linux. Windows isn't supported yet.
