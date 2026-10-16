@@ -45,7 +45,7 @@ Any tool, with raw arguments
 
 Global options
   --tab <id>                   target a specific tab
-  -o <file>                    where to save images (default ./pilot-<time>.jpg)
+  -o <file>                    where to save images (default ./aichrome-<time>.jpg)
 `;
 
 function parseValue(v) {
@@ -132,7 +132,7 @@ function install() {
   console.log(`Extension ID: ${extId}`);
   console.log(`\nNext:\n  1. chrome://extensions → enable Developer mode → Load unpacked → ${EXTENSION_DIR}`);
   console.log(`  2. aichrome status`);
-  console.log(`  3. (optional) claude mcp add --scope user chrome-pilot -- "${node}" "${CLI}" mcp`);
+  console.log(`  3. (optional) claude mcp add --scope user ai-in-chrome -- "${node}" "${CLI}" mcp`);
 }
 
 function printTools() {
@@ -210,7 +210,7 @@ async function execute(argv, callTool) {
   const res = await callTool(tool, args);
   if (res.text) console.log(res.text);
   if (res.image) {
-    const file = path.resolve(outFile || `pilot-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`);
+    const file = path.resolve(outFile || `aichrome-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`);
     fs.writeFileSync(file, Buffer.from(res.image.data, 'base64'));
     console.log(`Saved ${file}`);
   }
@@ -242,7 +242,7 @@ async function main() {
   if (cmd === 'shell') {
     const readline = await import('node:readline');
     const tty = process.stdin.isTTY;
-    const rl = readline.createInterface({ input: process.stdin, output: tty ? process.stdout : undefined, prompt: 'pilot> ' });
+    const rl = readline.createInterface({ input: process.stdin, output: tty ? process.stdout : undefined, prompt: 'aichrome> ' });
     if (tty) rl.prompt();
     for await (const line of rl) {
       if (line.trim() === 'exit' || line.trim() === 'quit') break;

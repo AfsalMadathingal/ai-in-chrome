@@ -1,7 +1,7 @@
 // AI in Chrome: accessibility-tree snapshot with stable element refs (ref_N).
-// Runs in the extension's isolated world; background.js calls window.__pilotTree / __pilotRef.
+// Runs in the extension's isolated world; background.js calls window.__aichromeTree / __aichromeRef.
 (() => {
-  if (window.__pilotTree) return;
+  if (window.__aichromeTree) return;
 
   const refs = new Map(); // ref -> WeakRef<Element>
   const reverse = new WeakMap(); // Element -> ref
@@ -151,13 +151,13 @@
     if (el.shadowRoot) for (const child of el.shadowRoot.children) walk(child, childDepth, maxDepth, filter, out);
   }
 
-  window.__pilotRef = (ref) => refs.get(ref)?.deref() || null;
+  window.__aichromeRef = (ref) => refs.get(ref)?.deref() || null;
 
-  window.__pilotTree = (filter = 'all', maxDepth = 15, refId = null) => {
+  window.__aichromeTree = (filter = 'all', maxDepth = 15, refId = null) => {
     const viewport = { width: window.innerWidth, height: window.innerHeight, scrollX: Math.round(scrollX), scrollY: Math.round(scrollY) };
     let root = document.body || document.documentElement;
     if (refId) {
-      root = window.__pilotRef(refId);
+      root = window.__aichromeRef(refId);
       if (!root || !root.isConnected) {
         return { error: `Element with ref_id '${refId}' not found. It may have been removed from the page. Use read_page without ref_id to get the current page state.`, pageContent: '', viewport };
       }

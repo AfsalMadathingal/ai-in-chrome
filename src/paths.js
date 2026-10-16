@@ -2,8 +2,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const HOST_NAME = 'com.chrome_pilot.bridge';
-export const HOME = process.env.AICHROME_HOME || path.join(os.homedir(), '.chrome-pilot');
+export const HOST_NAME = 'com.ai_in_chrome.bridge';
+export const HOME = process.env.AICHROME_HOME || path.join(os.homedir(), '.ai-in-chrome');
 export const SOCKET = path.join(HOME, 'bridge.sock');
 export const LOG_FILE = path.join(HOME, 'host.log');
 export const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');

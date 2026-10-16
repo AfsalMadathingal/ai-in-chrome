@@ -3,7 +3,7 @@
 Control your real Chrome from the terminal, or hand it to any AI over MCP. It works the same way Claude in Chrome does (CDP via `chrome.debugger`, accessibility tree with `ref_N` element refs, a native-messaging bridge, a tab group and an on-page indicator), but with no login and no cloud.
 
 ```
-aichrome CLI / any MCP client ──► ~/.chrome-pilot/bridge.sock ──► native host (launched by Chrome) ──► extension ──► CDP ──► tab
+aichrome CLI / any MCP client ──► ~/.ai-in-chrome/bridge.sock ──► native host (launched by Chrome) ──► extension ──► CDP ──► tab
 ```
 
 ## Setup (once)
@@ -63,7 +63,7 @@ Other clients (Codex, Cursor, Gemini CLI, …): use the same command, `node …/
 - Security: the socket is `0600` in a `0700` directory, so only your user can drive the browser. Chrome only lets the extension ID in the host manifest (`nknkkmpocjbicnfhkgkgiiemkddajodl`, fixed by the manifest `key`) talk to the host.
 - Chrome shows a "AI in Chrome started debugging this browser" bar while it controls a tab. That's the `chrome.debugger` API, same as the original.
 - Console and network capture start when AI in Chrome first attaches to a tab.
-- Host log: `~/.chrome-pilot/host.log`.
+- Host log: `~/.ai-in-chrome/host.log`.
 - GIF exports are saved by `aichrome` (default `~/Downloads`, or `-o` / `save_path`); `download: true` uses Chrome's downloads instead. gif.js (MIT) is vendored in `extension/vendor/`.
 - Uploads are read from disk by `aichrome` on your machine; requests over 1 MB are chunked (Chrome's native-messaging limit).
 - After editing extension code: `aichrome reload-extension`.

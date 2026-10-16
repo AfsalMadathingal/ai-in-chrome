@@ -156,11 +156,11 @@ async function renderGif(frames, opts) {
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-  if (msg?.type === 'pilot-revoke-url') {
+  if (msg?.type === 'aichrome-revoke-url') {
     URL.revokeObjectURL(msg.url);
     return;
   }
-  if (msg?.type !== 'pilot-render-gif') return;
+  if (msg?.type !== 'aichrome-render-gif') return;
   renderGif(msg.frames, msg.options || {})
     .then((result) => sendResponse({ ok: true, result }))
     .catch((e) => sendResponse({ ok: false, error: String(e?.message || e) }));

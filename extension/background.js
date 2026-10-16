@@ -2,7 +2,7 @@
 // Connects to the local native-messaging host (launched by Chrome) and executes tool requests
 // with the Chrome DevTools Protocol, the same way Claude in Chrome does — minus login/pairing.
 
-const HOST_NAME = 'com.chrome_pilot.bridge';
+const HOST_NAME = 'com.ai_in_chrome.bridge';
 const GROUP_TITLE = 'AI';
 const MAX_SHOT_PX = 1568;
 const NAV_TIMEOUT_MS = 30000;
@@ -34,7 +34,7 @@ function connect() {
   }
   port.onMessage.addListener(onHostMessage);
   port.onDisconnect.addListener(() => {
-    console.warn('[pilot] host disconnected:', chrome.runtime.lastError?.message);
+    console.warn('[aichrome] host disconnected:', chrome.runtime.lastError?.message);
     port = null;
     setBadge(false);
   });
@@ -79,8 +79,8 @@ function normalize(result) {
 
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
-chrome.alarms.create('pilot-reconnect', { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener((a) => a.name === 'pilot-reconnect' && connect());
+chrome.alarms.create('aichrome-reconnect', { periodInMinutes: 0.5 });
+chrome.alarms.onAlarm.addListener((a) => a.name === 'aichrome-reconnect' && connect());
 chrome.action.onClicked.addListener(() => { port?.disconnect(); port = null; connect(); });
 connect();
 
@@ -98,7 +98,7 @@ async function runTool(name, args) {
   if (name !== 'computer' && name !== 'navigate') return fn(args);
   const tabId = await resolveTab(args.tabId).catch(() => null);
   const result = await fn(args);
-  if (tabId != null) await recordAction(tabId, name, args, result).catch((e) => console.warn('[pilot] record', e));
+  if (tabId != null) await recordAction(tabId, name, args, result).catch((e) => console.warn('[aichrome] record', e));
   return result;
 }
 
@@ -218,7 +218,7 @@ async function computer(args) {
     case 'scroll_to': {
       if (!args.ref) throw new Error('ref is required');
       await inPage(id, (ref) => {
-        const el = window.__pilotRef(ref);
+        const el = window.__aichromeRef(ref);
         if (!el) throw new Error(`ref ${ref} not found; call read_page again`);
         el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       }, [args.ref]);
@@ -236,7 +236,7 @@ async function computer(args) {
 
 async function read_page({ tabId, filter = 'all', depth = 15, ref_id }) {
   const id = await resolveTab(tabId);
-  const res = await inPage(id, (f, d, r) => window.__pilotTree(f, d, r), [filter, Number(depth) || 15, ref_id || null]);
+  const res = await inPage(id, (f, d, r) => window.__aichromeTree(f, d, r), [filter, Number(depth) || 15, ref_id || null]);
   if (res.error && !res.pageContent) throw new Error(res.error);
   const t = await chrome.tabs.get(id);
   const vp = res.viewport;
@@ -246,7 +246,7 @@ async function read_page({ tabId, filter = 'all', depth = 15, ref_id }) {
 async function find({ tabId, query }) {
   if (!query) throw new Error('query is required');
   const id = await resolveTab(tabId);
-  const res = await inPage(id, () => window.__pilotTree('all', 40, null), []);
+  const res = await inPage(id, () => window.__aichromeTree('all', 40, null), []);
   const words = String(query).toLowerCase().split(/\s+/).filter(Boolean);
   const scored = res.pageContent.split('\n')
     .map((line) => ({ line: line.trim(), score: words.filter((w) => line.toLowerCase().includes(w)).length }))
@@ -262,7 +262,7 @@ async function form_input({ tabId, ref, value }) {
   const id = await resolveTab(tabId);
   await indicate(id, 'show');
   return inPage(id, (ref, value) => {
-    const el = window.__pilotRef(ref);
+    const el = window.__aichromeRef(ref);
     if (!el) throw new Error(`ref ${ref} not found; call read_page again`);
     el.scrollIntoView({ block: 'center', behavior: 'instant' });
     const fire = () => {
@@ -467,10 +467,10 @@ async function gif_creator({ action, tabId, download, coordinate, filename, opti
           const where = await downloadFile(gif.blobUrl, name);
           return `${summary}. Downloaded to ${where}. Recording cleared.`;
         } finally {
-          chrome.runtime.sendMessage({ type: 'pilot-revoke-url', url: gif.blobUrl }).catch(() => {});
+          chrome.runtime.sendMessage({ type: 'aichrome-revoke-url', url: gif.blobUrl }).catch(() => {});
         }
       }
-      chrome.runtime.sendMessage({ type: 'pilot-revoke-url', url: gif.blobUrl }).catch(() => {});
+      chrome.runtime.sendMessage({ type: 'aichrome-revoke-url', url: gif.blobUrl }).catch(() => {});
       if (coordinate) {
         const [x, y] = toCss(id, coordinate);
         const out = await dropFile(id, { x, y }, gif.base64, name, 'image/gif');
@@ -524,7 +524,7 @@ async function renderGif(frames, options) {
   if (!(await chrome.offscreen.hasDocument())) {
     await chrome.offscreen.createDocument({ url: 'offscreen.html', reasons: ['BLOBS'], justification: 'Encode GIF recordings' });
   }
-  const res = await chrome.runtime.sendMessage({ type: 'pilot-render-gif', frames, options });
+  const res = await chrome.runtime.sendMessage({ type: 'aichrome-render-gif', frames, options });
   if (!res?.ok) throw new Error(res?.error || 'GIF encoding failed');
   return res.result;
 }
@@ -548,7 +548,7 @@ async function file_upload({ tabId, ref, files }) {
   const id = await resolveTab(tabId);
   indicate(id, 'show');
   const res = await inPage(id, (ref, files) => {
-    const el = window.__pilotRef(ref);
+    const el = window.__aichromeRef(ref);
     if (!el || !el.isConnected) return { error: `ref ${ref} not found; call read_page again` };
     if (el.tagName !== 'INPUT' || el.type !== 'file') {
       return { error: `${ref} is <${el.tagName.toLowerCase()}${el.type ? ` type="${el.type}"` : ''}>, not a file input. Look for an input[type=file] (often hidden) with read_page filter "all".` };
@@ -591,7 +591,7 @@ async function dropFile(tabId, target, base64, name, mimeType) {
   const res = await inPage(tabId, (target, base64, name, mimeType) => {
     let el = null;
     if (target.ref) {
-      el = window.__pilotRef(target.ref);
+      el = window.__aichromeRef(target.ref);
       if (!el || !el.isConnected) return { error: `ref ${target.ref} not found; call read_page again` };
     } else {
       el = document.elementFromPoint(target.x, target.y);
@@ -742,7 +742,7 @@ function toCss(tabId, coord) {
 async function target(tabId, args) {
   if (args.ref) {
     const r = await inPage(tabId, (ref) => {
-      const el = window.__pilotRef(ref);
+      const el = window.__aichromeRef(ref);
       if (!el) return null;
       el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
       const b = el.getBoundingClientRect();
@@ -1025,17 +1025,17 @@ async function inPage(tabId, func, args) {
     if (result !== undefined && result !== null) return result;
   } catch (e) {
     const msg = String(e?.message || e);
-    if (!/__pilot(Tree|Ref) is not a function/.test(msg)) throw new Error(msg.replace(/^Error: /, ''));
+    if (!/__aichrome(Tree|Ref) is not a function/.test(msg)) throw new Error(msg.replace(/^Error: /, ''));
   }
   // Our content scripts are missing (page opened before the extension loaded, or orphaned by a reload).
-  const [{ result: ready } = {}] = await exec({ func: () => typeof window.__pilotTree === 'function' });
+  const [{ result: ready } = {}] = await exec({ func: () => typeof window.__aichromeTree === 'function' });
   if (ready) return result;
   await exec({ files: ['tree.js', 'indicator.js'] });
   return run();
 }
 
 function indicate(tabId, action, extra = {}) {
-  const msg = chrome.tabs.sendMessage(tabId, { type: 'pilot-indicator', action, ...extra }).catch(() => {});
+  const msg = chrome.tabs.sendMessage(tabId, { type: 'aichrome-indicator', action, ...extra }).catch(() => {});
   return action === 'hide' ? Promise.race([msg, sleep(50)]) : Promise.resolve();
 }
 

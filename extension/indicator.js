@@ -1,7 +1,7 @@
 // AI in Chrome: on-page indicator (glowing frame + phantom cursor) while the agent acts on this tab.
 (() => {
-  if (window.__pilotIndicator) return;
-  window.__pilotIndicator = true;
+  if (window.__aichromeIndicator) return;
+  window.__aichromeIndicator = true;
 
   const COLOR = '124, 92, 255';
   const IDLE_HIDE_MS = 5000;
@@ -13,7 +13,7 @@
   function build() {
     if (host?.isConnected) return;
     host = document.createElement('div');
-    host.id = 'chrome-pilot-indicator';
+    host.id = 'ai-in-chrome-indicator';
     host.setAttribute('aria-hidden', 'true');
     host.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483646;display:none;';
     const shadow = host.attachShadow({ mode: 'closed' });
@@ -70,7 +70,7 @@
   }
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg?.type !== 'pilot-indicator') return;
+    if (msg?.type !== 'aichrome-indicator') return;
     if (msg.action === 'show') show();
     else if (msg.action === 'hide') hide();
     else if (msg.action === 'move') move(msg.x, msg.y, msg.click);
