@@ -1,0 +1,5 @@
+node_modules/
+.DS_Store
+*.log
+# Local working notes (reverse-engineering notes, machine-specific paths)
+PLAN.md

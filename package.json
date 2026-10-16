@@ -1,0 +1,8 @@
+{
+  "name": "ai-in-chrome",
+  "version": "0.1.0",
+  "description": "Control Chrome from your terminal or any AI (CLI / MCP) via a native-messaging bridge.",
+  "type": "module",
+  "bin": { "cpilot": "bin/cpilot.js" },
+  "engines": { "node": ">=20" }
+}
