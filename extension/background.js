@@ -6,6 +6,7 @@ import {
   initNetwork, onNetworkEvent, onNetworkAttach, onNetworkTabRemoved,
   read_network_requests, network_request, network_intercept, network_export, cookies, __http, __tab_url,
 } from './network.js';
+import { initPanel, onAgentEvent, onToolCall, approve_action, sidepanel_wait, sidepanel_reply } from './panel.js';
 
 const HOST_NAME = 'com.ai_in_chrome.bridge';
 const GROUP_TITLE = 'AI';
@@ -56,6 +57,7 @@ const chunks = new Map(); // request id -> string[]
 
 async function onHostMessage(msg) {
   if (msg?.type === 'ping') return port?.postMessage({ type: 'pong' });
+  if (msg?.type === 'agent_event') return onAgentEvent(msg.sid, msg.ev);
   if (msg?.type === 'chunk') {
     const parts = chunks.get(msg.id) || [];
     parts[msg.index] = msg.data;
@@ -95,13 +97,36 @@ const TOOLS = {
   form_input, get_page_text, javascript_tool, read_console_messages, read_network_requests, resize_window, cdp_command, extension_reload,
   gif_creator, file_upload, upload_image,
   network_request, network_intercept, network_export, cookies, __http, __tab_url,
+  approve_action, sidepanel_wait, sidepanel_reply,
 };
 
 initNetwork({ cdp, resolveTab, ensureAttached });
+initPanel({
+  hostSend(msg) {
+    if (!port) connect();
+    if (!port) return false;
+    port.postMessage(msg);
+    return true;
+  },
+  setCurrentTab,
+});
 
 async function runTool(name, args) {
   const fn = TOOLS[name];
   if (!fn) throw new Error(`Unknown tool "${name}". Available: ${Object.keys(TOOLS).join(', ')}`);
+  const mirror = onToolCall(name, args); // shows a terminal AI's activity in the side panel
+  if (!mirror) return runRecorded(name, fn, args);
+  try {
+    const result = await runRecorded(name, fn, args);
+    mirror(true, typeof result === 'string' ? result : result?.text);
+    return result;
+  } catch (e) {
+    mirror(false, e.message);
+    throw e;
+  }
+}
+
+async function runRecorded(name, fn, args) {
   if (name !== 'computer' && name !== 'navigate') return fn(args);
   const tabId = await resolveTab(args.tabId).catch(() => null);
   const result = await fn(args);

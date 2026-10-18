@@ -19,7 +19,8 @@
     "nativeMessaging",
     "webNavigation",
     "offscreen",
-    "downloads"
+    "downloads",
+    "sidePanel"
   ],
   "host_permissions": [
     "<all_urls>"
@@ -48,5 +49,17 @@
       "run_at": "document_idle",
       "all_frames": false
     }
-  ]
+  ],
+  "side_panel": {
+    "default_path": "sidepanel.html"
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+E",
+        "mac": "Command+Shift+E"
+      },
+      "description": "Open the AI in Chrome side panel"
+    }
+  }
 }

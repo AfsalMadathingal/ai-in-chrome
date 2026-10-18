@@ -36,11 +36,19 @@ export function runMcp() {
         case 'ping':
           return send({ id, result: {} });
         case 'tools/list':
-          return send({ id, result: { tools: TOOLS } });
+          // approve_action only exists for the Claude Code process the side panel launched.
+          return send({ id, result: { tools: process.env.AICHROME_SESSION ? TOOLS : TOOLS.filter((t) => t.name !== 'approve_action') } });
         case 'tools/call': {
           try {
             // One browser: run tool calls strictly in order, even if the client sends them in parallel.
-            const run = queue.then(() => callTool(params.name, params.arguments || {}));
+            const args = { ...(params.arguments || {}) };
+            if (params.name === 'approve_action') Object.assign(args, { sid: process.env.AICHROME_SESSION, mode: process.env.AICHROME_MODE });
+            // Waiting for the side panel must not block the other tools.
+            if (params.name === 'sidepanel_wait' || params.name === 'approve_action') {
+              const res = await callTool(params.name, args);
+              return send({ id, result: { content: [{ type: 'text', text: res.text || '' }] } });
+            }
+            const run = queue.then(() => callTool(params.name, args));
             queue = run.catch(() => {});
             const res = await run;
             const content = [];

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI in Chrome</title>
+  <link rel="stylesheet" href="sidepanel.css" />
+</head>
+<body>
+  <header>
+    <div class="row">
+      <select id="agent" title="Which AI answers">
+        <option value="claude">Claude Code</option>
+        <option value="codex">Codex</option>
+        <option value="terminal">Terminal AI (listening)</option>
+      </select>
+      <span class="spacer"></span>
+      <button id="newChat" class="icon" title="New chat" aria-label="New chat">
+        <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>
+      </button>
+      <button id="settingsBtn" class="icon" title="Settings" aria-label="Settings">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
+    </div>
+    <div id="settings" hidden>
+      <label>Permissions
+        <select id="mode">
+          <option value="ask">Ask before acting</option>
+          <option value="auto">Act without asking (browser only)</option>
+        </select>
+      </label>
+      <label>Working folder <input id="cwd" placeholder="~" spellcheck="false" /></label>
+      <label>Model <input id="model" placeholder="default" spellcheck="false" /></label>
+      <p class="hint" id="agentHint"></p>
+    </div>
+    <div id="tabChip" class="tabchip" title="The tab the AI will work on"><img id="tabIcon" alt="" /><span id="tabTitle">No tab</span></div>
+  </header>
+
+  <main id="log" aria-live="polite">
+    <div id="empty" class="empty">
+      <h1>AI in Chrome</h1>
+      <p>Chat with your terminal AI. It can see and control this tab.</p>
+      <div class="suggest">
+        <button>Summarize this page</button>
+        <button>Find the main buttons and forms on this page</button>
+        <button>List the API requests this page makes</button>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div id="status" class="status"></div>
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="Ask anything about this tab…"></textarea>
+      <button id="send" class="send" title="Send (Enter)" aria-label="Send">
+        <svg class="i-send" viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <svg class="i-stop" viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg>
+      </button>
+    </div>
+  </footer>
+  <script src="sidepanel.js" type="module"></script>
+</body>
+</html>

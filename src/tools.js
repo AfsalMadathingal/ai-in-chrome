@@ -307,4 +307,26 @@ export const TOOLS = [
       },
     },
   },
+  {
+    name: 'sidepanel_wait',
+    description:
+      'Listen to the AI in Chrome side panel: waits until the user sends a message from the panel in Chrome and returns it ' +
+      '(with the tab it is about). Do the task with the browser tools, answer with sidepanel_reply, then call sidepanel_wait again. ' +
+      'Use when the user asks you to listen to / connect to the side panel.',
+    inputSchema: { type: 'object', properties: { timeout: { type: 'number', description: 'Seconds to wait (default 600)' } } },
+  },
+  {
+    name: 'sidepanel_reply',
+    description: 'Show your answer to the side panel message you received from sidepanel_wait (Markdown). done:false posts a progress update and keeps the turn open.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string' }, done: { type: 'boolean' } }, required: ['text'] },
+  },
+  {
+    name: 'approve_action',
+    description: 'Internal: permission prompt for the side panel\'s Claude Code. Asks the user in the panel. Do not call directly.',
+    inputSchema: {
+      type: 'object',
+      properties: { tool_name: { type: 'string' }, input: { type: 'object' }, tool_use_id: { type: 'string' } },
+      required: ['tool_name'],
+    },
+  },
 ];

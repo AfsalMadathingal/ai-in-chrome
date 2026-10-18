@@ -69,6 +69,16 @@ aichrome shell                       # interactive prompt, or pipe commands in
 
 Run `aichrome help` for every shortcut, and `aichrome tools` for every tool and argument.
 
+## Side panel
+
+Click the toolbar icon (or press Cmd/Ctrl+Shift+E) to open a chat panel next to the page. It talks to the AI you already use in your terminal, with no extra login:
+
+- **Claude Code**: runs your logged-in `claude` in the background. It controls the tab through the same tools and asks in the panel before clicking, typing or navigating, unless you pick "Act without asking".
+- **Codex**: runs your logged-in `codex` (untested).
+- **Terminal AI**: an AI already open in your terminal answers the panel. Tell it "listen to the AI in Chrome side panel" and it uses `sidepanel_wait` / `sidepanel_reply` (untested).
+
+Settings (gear icon): working folder and model. After installing or updating, run `aichrome install` once so the panel can find `claude` / `codex`.
+
 ## Use it with AI
 
 **Claude Code**

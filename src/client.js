@@ -11,6 +11,8 @@ const NOT_CONNECTED =
 export async function callTool(tool, args = {}, opts = {}) {
   // http_request runs here (it may send from Node); it asks the extension for cookies/captures as needed.
   if (tool === 'http_request') return httpRequest(args, (t, a) => sendRaw(t, a, opts));
+  if (tool === 'sidepanel_wait') opts = { timeoutMs: (Math.min(Number(args.timeout) || 600, 3600) + 15) * 1000, ...opts };
+  if (tool === 'approve_action') opts = { timeoutMs: 330000, ...opts };
   const res = await sendRaw(tool, prepareArgs(tool, args), opts);
   if (res.file) {
     const saved = saveFile(res.file, args.save_path);

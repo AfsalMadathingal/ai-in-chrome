@@ -4,6 +4,7 @@
 import fs from 'node:fs';
 import net from 'node:net';
 import { HOME, SOCKET, LOG_FILE } from './paths.js';
+import { Agents } from './agents.js';
 
 function log(...args) {
   try {
@@ -55,8 +56,12 @@ export function runHost() {
     }
   }
 
+  // Side-panel chats run the user's terminal AI from here.
+  const agents = new Agents((sid, ev) => toExtension({ type: 'agent_event', sid, ev }), log);
+
   function onExtensionMessage(msg) {
     if (msg.type === 'hello') log('extension connected, version', msg.version);
+    if (msg.type?.startsWith('agent_')) return agents.handle(msg);
     if (msg.type === 'tool_response') {
       const reply = pending.get(msg.id);
       if (reply) {
@@ -114,6 +119,7 @@ export function runHost() {
   });
 
   function shutdown() {
+    agents.shutdown();
     // Only remove the socket if it is still ours (a newer host may have replaced it).
     try {
       if (socketIno && fs.statSync(SOCKET).ino === socketIno) fs.unlinkSync(SOCKET);
