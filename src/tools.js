@@ -110,10 +110,126 @@ export const TOOLS = [
   },
   {
     name: 'read_network_requests',
-    description: 'Read network requests captured since AI in Chrome attached to the tab.',
+    description:
+      'List network requests captured on the tab (XHR/fetch, documents, scripts, WebSockets…) with #id, method, status, type, size and time. ' +
+      'Then use network_request with the #id for full headers (incl. Cookie / Authorization), bodies, or a curl command.',
     inputSchema: {
       type: 'object',
-      properties: { urlPattern: { type: 'string', description: 'Substring filter' }, limit: { type: 'number' }, clear: { type: 'boolean' }, tabId },
+      properties: {
+        urlPattern: { type: 'string', description: 'Substring, or /regex/flags' },
+        type: { type: 'string', description: 'Resource type filter, e.g. "fetch,xhr", "document", "websocket"' },
+        method: { type: 'string', description: 'e.g. POST' },
+        status: { type: 'string', description: 'e.g. 200, 4xx, 5xx, or "error" (failed or >= 400)' },
+        limit: { type: 'number', description: 'Most recent N (default 100)' },
+        clear: { type: 'boolean' },
+        tabId,
+      },
+    },
+  },
+  {
+    name: 'network_request',
+    description:
+      'Full details of one captured request: real request headers as sent (Cookie, Authorization, tokens), request body, ' +
+      'response headers (incl. Set-Cookie), response body, timing, WebSocket frames. format "curl" or "fetch" gives a ready-to-run command.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        requestId: { type: ['number', 'string'], description: 'The #id from read_network_requests' },
+        format: { type: 'string', enum: ['text', 'curl', 'fetch', 'json'] },
+        includeBody: { type: 'boolean', description: 'Include the response body (default true)' },
+        maxBodyChars: { type: 'number', description: 'Truncate bodies (default 20000)' },
+        save_path: { type: 'string', description: 'Save the response body to this file or folder (binary-safe)' },
+      },
+      required: ['requestId'],
+    },
+  },
+  {
+    name: 'http_request',
+    description:
+      "Send an HTTP request as the logged-in browser user, or replay/edit a captured one (from=#id). via: \"page\" runs fetch inside the tab " +
+      '(its cookies, origin, CSRF context; CORS applies), "extension" fetches without CORS with browser cookies, "node" sends from the ' +
+      'local machine with any header you want plus the browser\'s cookies (incl. HttpOnly). Default "auto": page for same-origin URLs, else node.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        url: { type: 'string' },
+        method: { type: 'string', description: 'Default GET, or POST when there is a body' },
+        headers: { type: 'object', description: 'Headers to set; null removes one copied from a captured request' },
+        body: { type: ['string', 'object'], description: 'Request body; objects are sent as JSON' },
+        from: { type: ['number', 'string'], description: 'Replay captured request #id; url/method/headers/body override it' },
+        via: { type: 'string', enum: ['auto', 'page', 'extension', 'node'] },
+        cookies: { type: 'boolean', description: 'node: attach the browser cookies for the URL (default true)' },
+        follow: { type: 'boolean', description: 'Follow redirects (default true)' },
+        format: { type: 'string', enum: ['text', 'json'] },
+        maxBodyChars: { type: 'number' },
+        save_path: { type: 'string', description: 'Save the response body to this file or folder' },
+        tabId,
+      },
+    },
+  },
+  {
+    name: 'cookies',
+    description: 'Read, set or delete cookies, including HttpOnly ones. get: for the page (or url), or every cookie of a domain.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['get', 'set', 'delete'] },
+        url: { type: 'string' },
+        domain: { type: 'string', description: 'get: all cookies for this domain and its subdomains' },
+        name: { type: 'string' },
+        value: { type: 'string' },
+        path: { type: 'string' },
+        secure: { type: 'boolean' },
+        httpOnly: { type: 'boolean' },
+        sameSite: { type: 'string', enum: ['Strict', 'Lax', 'None'] },
+        expires: { type: ['number', 'string'], description: 'Unix seconds or a date string; omit for a session cookie' },
+        format: { type: 'string', enum: ['text', 'header', 'json'], description: 'get: "header" gives a Cookie header value' },
+        tabId,
+      },
+    },
+  },
+  {
+    name: 'network_intercept',
+    description:
+      'Intercept the tab\'s requests live with rules (first match wins, they stay until removed). type "block" fails matching requests; ' +
+      '"mock" answers them without hitting the server (status, body, responseHeaders; CORS handled); "modify" changes the request ' +
+      '(url, method, headers, postData) and/or the response (status, responseHeaders, body, replace). delayMs slows requests down.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['add', 'list', 'remove', 'clear'] },
+        pattern: { type: 'string', description: 'URL glob with * and ?, e.g. "*api/user*"; without wildcards it matches as a substring' },
+        type: { type: 'string', enum: ['block', 'mock', 'modify'] },
+        onlyMethod: { type: 'string', description: 'Only match this HTTP method' },
+        resourceType: { type: 'string', description: 'Only match this type: Document, Script, XHR, Fetch, Image, Stylesheet…' },
+        url: { type: 'string', description: 'modify: send the request to this URL instead' },
+        method: { type: 'string', description: 'modify: change the HTTP method' },
+        headers: { type: 'object', description: 'modify: request headers to set (null removes one)' },
+        postData: { type: ['string', 'object'], description: 'modify: replace the request body' },
+        status: { type: 'number', description: 'mock/modify: response status' },
+        responseHeaders: { type: 'object', description: 'mock/modify: response headers to set (null removes one)' },
+        body: { type: ['string', 'object'], description: 'mock/modify: response body (objects become JSON)' },
+        replace: { type: 'array', description: 'modify: [[find, replace], …] on the response text; find may be "/regex/flags"' },
+        errorReason: { type: 'string', description: 'block: Failed, Aborted, TimedOut, AccessDenied, ConnectionRefused, BlockedByClient (default)…' },
+        delayMs: { type: 'number', description: 'Hold matching requests this long before sending (max 60000)' },
+        times: { type: 'number', description: 'Remove the rule after this many hits' },
+        ruleId: { type: 'string', description: 'remove: rule id, e.g. r2' },
+        tabId,
+      },
+      required: ['action'],
+    },
+  },
+  {
+    name: 'network_export',
+    description: 'Export captured requests as a HAR file (opens in Chrome DevTools, Charles, Postman…). Contains cookies and tokens.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        urlPattern: { type: 'string' },
+        includeBodies: { type: 'boolean', description: 'Default true' },
+        save_path: { type: 'string', description: 'File or folder (default ~/Downloads)' },
+        tabId,
+      },
     },
   },
   {

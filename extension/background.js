@@ -2,6 +2,11 @@
 // Connects to the local native-messaging host (launched by Chrome) and executes tool requests
 // with the Chrome DevTools Protocol, the same way Claude in Chrome does — minus login/pairing.
 
+import {
+  initNetwork, onNetworkEvent, onNetworkAttach, onNetworkTabRemoved,
+  read_network_requests, network_request, network_intercept, network_export, cookies, __http, __tab_url,
+} from './network.js';
+
 const HOST_NAME = 'com.ai_in_chrome.bridge';
 const GROUP_TITLE = 'AI';
 const MAX_SHOT_PX = 1568;
@@ -19,7 +24,6 @@ function setCurrentTab(id) {
 const attached = new Set();
 const shotScale = new Map(); // tabId -> { sx, sy } CSS px per screenshot px
 const consoleLogs = new Map(); // tabId -> [{ level, text, url, ts }]
-const networkLogs = new Map(); // tabId -> Map<requestId, entry>
 
 // ---------- native host connection ----------
 
@@ -90,7 +94,10 @@ const TOOLS = {
   tabs_context, tabs_create, tabs_close, tabs_select, navigate, computer, read_page, find,
   form_input, get_page_text, javascript_tool, read_console_messages, read_network_requests, resize_window, cdp_command, extension_reload,
   gif_creator, file_upload, upload_image,
+  network_request, network_intercept, network_export, cookies, __http, __tab_url,
 };
+
+initNetwork({ cdp, resolveTab, ensureAttached });
 
 async function runTool(name, args) {
   const fn = TOOLS[name];
@@ -332,17 +339,6 @@ async function read_console_messages({ tabId, pattern, limit = 100, onlyErrors =
   if (clear) consoleLogs.set(id, []);
   if (!logs.length) return 'No console messages captured (capture starts when AI in Chrome first attaches to the tab).';
   return logs.map((l) => `[${l.level}] ${l.text}${l.url ? `  (${l.url})` : ''}`).join('\n');
-}
-
-async function read_network_requests({ tabId, urlPattern, limit = 100, clear = false }) {
-  const id = await resolveTab(tabId);
-  await ensureAttached(id);
-  let reqs = [...(networkLogs.get(id)?.values() || [])];
-  if (urlPattern) reqs = reqs.filter((r) => r.url.includes(urlPattern));
-  reqs = reqs.slice(-limit);
-  if (clear) networkLogs.set(id, new Map());
-  if (!reqs.length) return 'No network requests captured (capture starts when AI in Chrome first attaches to the tab).';
-  return reqs.map((r) => `${r.method} ${r.status ?? (r.failed ? 'FAILED ' + r.failed : '…')} ${r.type || ''} ${r.url}`).join('\n');
 }
 
 async function resize_window({ tabId, width, height }) {
@@ -855,9 +851,11 @@ async function ensureAttached(tabId) {
   attached.add(tabId);
   const send = (m, p) => chrome.debugger.sendCommand({ tabId }, m, p).catch(() => {});
   await Promise.all([
-    send('Page.enable'), send('Runtime.enable'), send('Network.enable'),
+    send('Page.enable'), send('Runtime.enable'),
+    send('Network.enable', { maxTotalBufferSize: 100e6, maxResourceBufferSize: 10e6, maxPostDataSize: 1e6 }),
     send('Emulation.setFocusEmulationEnabled', { enabled: true }),
   ]);
+  onNetworkAttach(tabId);
 }
 
 async function cdp(tabId, method, params = {}) {
@@ -878,17 +876,8 @@ chrome.debugger.onEvent.addListener(({ tabId }, method, params) => {
   } else if (method === 'Runtime.exceptionThrown') {
     const d = params.exceptionDetails;
     pushLog(tabId, { level: 'exception', text: d.exception?.description || d.text, url: d.url });
-  } else if (method === 'Network.requestWillBeSent') {
-    const map = networkLogs.get(tabId) || new Map();
-    map.set(params.requestId, { url: params.request.url, method: params.request.method, type: params.type });
-    if (map.size > LOG_LIMIT) map.delete(map.keys().next().value);
-    networkLogs.set(tabId, map);
-  } else if (method === 'Network.responseReceived') {
-    const entry = networkLogs.get(tabId)?.get(params.requestId);
-    if (entry) entry.status = params.response.status;
-  } else if (method === 'Network.loadingFailed') {
-    const entry = networkLogs.get(tabId)?.get(params.requestId);
-    if (entry) entry.failed = params.errorText;
+  } else if (method.startsWith('Network.') || method.startsWith('Fetch.')) {
+    onNetworkEvent(tabId, method, params);
   }
 });
 
@@ -904,7 +893,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   shotScale.delete(tabId);
   dprCache.delete(tabId);
   consoleLogs.delete(tabId);
-  networkLogs.delete(tabId);
+  onNetworkTabRemoved(tabId);
   if (currentTab === tabId) setCurrentTab(null);
 });
 

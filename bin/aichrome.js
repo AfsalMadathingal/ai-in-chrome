@@ -29,12 +29,24 @@ Shortcuts
   aichrome scroll [up|down|left|right] [ticks]
   aichrome fill <ref_N> <value>  set a form field                 (form_input)
   aichrome js <code>             evaluate JavaScript              (javascript_tool)
-  aichrome console | network     captured console / network logs
+  aichrome console               captured console logs and errors
   aichrome upload <ref> <file>…  put local files into a file input (file_upload)
   aichrome upload-image <shot_N|file> <ref>   image into a file input or drop zone (upload_image)
   aichrome record start|stop|clear            GIF recording (gif_creator)
   aichrome record export [-o file.gif]        save the GIF (default ~/Downloads)
   aichrome reload-extension      reload the extension after code changes
+
+Network (developer / debugging)
+  aichrome network [filter]      captured requests with #ids        (read_network_requests)
+  aichrome request <#>           full headers, cookies, tokens, bodies (network_request)
+  aichrome curl <#>              the request as a curl command
+  aichrome replay <#> [key=value]   send it again, optionally edited (http_request from=#)
+  aichrome http [METHOD] <url> [body] [-H "Name: value"]   send as the logged-in user (http_request)
+  aichrome cookies [domain|url]  cookies incl. HttpOnly             (cookies)
+  aichrome storage               localStorage + sessionStorage of the page
+  aichrome intercept add <pattern> block|mock|modify [key=value…]   (network_intercept)
+  aichrome intercept list | remove <rN> | clear
+  aichrome har [-o file.har]     export captured traffic as HAR     (network_export)
 
 Fast mode (one process, no startup cost per command)
   aichrome run "click ref_3; type hello; key Enter"
@@ -47,7 +59,8 @@ Any tool, with raw arguments
 
 Global options
   --tab <id>                   target a specific tab
-  -o <file>                    where to save images (default ./aichrome-<time>.jpg)
+  -o <file>                    where to save images, GIFs, HAR files and response bodies
+  -H "Name: value"             add a request header (http, replay, intercept)
 `;
 
 function parseValue(v) {
@@ -87,7 +100,27 @@ function resolveCommand(cmd, pos) {
     case 'fill': return ['form_input', { ref: pos[0], value: pos.slice(1).join(' ') }];
     case 'js': return ['javascript_tool', { text: rest }];
     case 'console': return ['read_console_messages', {}];
-    case 'network': return ['read_network_requests', {}];
+    case 'network': return ['read_network_requests', pos[0] ? { urlPattern: pos[0] } : {}];
+    case 'request': return ['network_request', { requestId: pos[0] }];
+    case 'curl': return ['network_request', { requestId: pos[0], format: 'curl' }];
+    case 'replay': return ['http_request', { from: pos[0] }];
+    case 'http': {
+      const method = /^[A-Z]+$/.test(pos[0]) ? pos.shift() : undefined;
+      const args = { url: pos[0] };
+      if (method) args.method = method;
+      if (pos.length > 1) args.body = pos.slice(1).join(' ');
+      return ['http_request', args];
+    }
+    case 'cookies':
+      if (!pos[0]) return ['cookies', {}];
+      return ['cookies', /^https?:/.test(pos[0]) ? { url: pos[0] } : { domain: pos[0] }];
+    case 'storage':
+      return ['javascript_tool', { text: 'JSON.stringify({ localStorage: { ...localStorage }, sessionStorage: { ...sessionStorage } }, null, 2)' }];
+    case 'intercept':
+      if (pos[0] === 'add') return ['network_intercept', { action: 'add', pattern: pos[1], type: pos[2] || 'modify' }];
+      if (pos[0] === 'remove') return ['network_intercept', { action: 'remove', ruleId: pos[1] }];
+      return ['network_intercept', { action: pos[0] || 'list' }];
+    case 'har': return ['network_export', {}];
     case 'reload-extension': return ['extension_reload', {}];
     case 'upload': return ['file_upload', { ref: pos[0], paths: pos.slice(1) }];
     case 'upload-image': return ['upload_image', /^shot_\d+$/.test(pos[0]) ? { imageId: pos[0], ref: pos[1] } : { path: pos[0], ref: pos[1] }];
@@ -205,7 +238,12 @@ async function execute(argv, callTool) {
     if (a === '-o' || a === '--out') outFile = argv[++i];
     else if (a === '--tab') tab = Number(argv[++i]);
     else if (a === '--json') Object.assign(opts, JSON.parse(argv[++i]));
-    else if (/^[a-z_]+=/.test(a)) {
+    else if (a === '-H' || a === '--header') {
+      const h = argv[++i];
+      const c = h.indexOf(':');
+      opts.headers = { ...opts.headers, [h.slice(0, c).trim()]: h.slice(c + 1).trim() };
+    }
+    else if (/^[a-zA-Z_]+=/.test(a)) {
       const eq = a.indexOf('=');
       opts[a.slice(0, eq)] = parseValue(a.slice(eq + 1));
     } else pos.push(a);
@@ -218,7 +256,7 @@ async function execute(argv, callTool) {
   }
   Object.assign(args, opts);
   if (tab != null) args.tabId = tab;
-  if (outFile && tool === 'gif_creator') args.save_path = outFile;
+  if (outFile && ['gif_creator', 'network_export', 'network_request', 'http_request'].includes(tool)) args.save_path = outFile;
 
   const res = await callTool(tool, args);
   if (res.text) console.log(res.text);

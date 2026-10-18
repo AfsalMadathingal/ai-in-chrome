@@ -43,6 +43,23 @@ aichrome js "document.title"
 aichrome record start … aichrome record export -o demo.gif
 ```
 
+Network debugging, as the logged-in user:
+
+```bash
+aichrome network api                 # captured requests:  #12 POST 200 Fetch 1.2 KB 85ms https://…/api/…
+aichrome request 12                  # full headers as sent (Cookie, Authorization), bodies, Set-Cookie
+aichrome curl 12                     # copy as curl
+aichrome replay 12 'body={"id":2}'   # send it again, edited
+aichrome http POST https://site/api/x '{"a":1}' -H "X-Debug: 1"   # new request with the browser's cookies
+aichrome cookies example.com         # all cookies incl. HttpOnly; also set/delete
+aichrome storage                     # localStorage + sessionStorage
+aichrome intercept add "*api/user*" mock 'body={"name":"test"}'   # fake a response
+aichrome intercept add "*api/*" modify -H "Authorization: Bearer other"  # rewrite requests live
+aichrome intercept add "*.js" modify 'replace=[["debug=false","debug=true"]]'  # rewrite responses
+aichrome intercept add "*ads*" block; aichrome intercept list; aichrome intercept clear
+aichrome har -o session.har          # export for DevTools / Postman / Charles
+```
+
 Several steps in one process (fastest):
 
 ```bash
@@ -76,7 +93,12 @@ aichrome install-skill               # teaches Claude how to use it well
 | `read_page`, `find` | Accessibility tree with `ref_N` refs; find elements by words |
 | `form_input` | Set text fields, selects, checkboxes and radios by ref |
 | `get_page_text`, `javascript_tool` | Readable page text; run JavaScript in the page |
-| `read_console_messages`, `read_network_requests` | Captured console output, errors, dialogs and requests |
+| `read_console_messages` | Captured console output, errors and dialogs |
+| `read_network_requests`, `network_request` | Captured traffic; one request in full: real headers (Cookie, Authorization), bodies, Set-Cookie, WebSocket frames, or as curl/fetch |
+| `http_request` | Send or replay a request as the logged-in user: inside the page, from the extension (no CORS), or from Node (any header, browser cookies attached) |
+| `cookies` | Get, set, delete cookies, including HttpOnly |
+| `network_intercept` | Live rules: block, mock responses, modify requests (URL, method, headers, body) and responses (status, headers, body, find/replace), add delay |
+| `network_export` | Export captured traffic as HAR |
 | `file_upload`, `upload_image` | Local files or screenshots into file inputs or drop zones (10 MB max) |
 | `gif_creator` | Record actions and export an annotated GIF |
 | `resize_window`, `cdp_command`, `extension_reload` | Window size, raw DevTools Protocol, reload the extension |
@@ -92,11 +114,13 @@ aichrome install-skill               # teaches Claude how to use it well
 - The socket `~/.ai-in-chrome/bridge.sock` is `0600` inside a `0700` folder, so only your user account can drive the browser.
 - Chrome only allows the extension ID in the host manifest (`nknkkmpocjbicnfhkgkgiiemkddajodl`, fixed by the manifest `key`) to start the bridge.
 - Nothing leaves your machine. The AI you connect sees what the tools return (page text, screenshots), so only connect AIs you trust with your browser.
+- The network tools show **real session cookies and auth tokens** (that's the point, for debugging). Whatever AI you connect sees them too, and HAR exports contain them. Don't paste that output or share HAR files publicly.
 
 ## Notes
 
 - While AI in Chrome controls a tab, Chrome shows a "started debugging this browser" bar. That's the `chrome.debugger` API at work.
-- Console and network capture start when it first attaches to a tab.
+- Console and network capture start when it first attaches to a tab. Reload the page to capture its first requests. Up to 500 requests per tab are kept; XHR/fetch bodies are kept after load, other bodies only while Chrome still has them.
+- Intercept rules belong to a tab and stay active until removed or until the extension reloads.
 - `chrome://` pages and the Chrome Web Store can't be automated.
 - Paste (`cmd+v`) may not work from synthetic input. Use `type` instead.
 - After editing extension code: `aichrome reload-extension`. After moving the folder or changing Node: `aichrome install`.

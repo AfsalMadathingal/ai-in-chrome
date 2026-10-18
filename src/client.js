@@ -1,6 +1,7 @@
 import net from 'node:net';
 import { SOCKET } from './paths.js';
 import { prepareArgs, saveFile } from './files.js';
+import { httpRequest } from './http.js';
 
 const NOT_CONNECTED =
   'AI in Chrome is not connected. Make sure Chrome is running with the AI in Chrome extension loaded, ' +
@@ -8,6 +9,8 @@ const NOT_CONNECTED =
 
 // Call a tool: local file paths are read here, and returned files (e.g. GIFs) are saved here.
 export async function callTool(tool, args = {}, opts = {}) {
+  // http_request runs here (it may send from Node); it asks the extension for cookies/captures as needed.
+  if (tool === 'http_request') return httpRequest(args, (t, a) => sendRaw(t, a, opts));
   const res = await sendRaw(tool, prepareArgs(tool, args), opts);
   if (res.file) {
     const saved = saveFile(res.file, args.save_path);

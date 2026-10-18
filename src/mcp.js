@@ -3,7 +3,7 @@ import readline from 'node:readline';
 import { TOOLS } from './tools.js';
 import { callTool } from './client.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.2.0';
 
 export function runMcp() {
   let queue = Promise.resolve();
@@ -30,7 +30,7 @@ export function runMcp() {
               serverInfo: { name: 'ai-in-chrome', version: VERSION },
               instructions:
                 'AI in Chrome controls the user\'s real Chrome browser. Start with tabs_context or tabs_create, then use ' +
-                'read_page/find for element refs or computer screenshot for visual control.',
+                'read_page/find for element refs or computer screenshot for visual control. For API debugging use read_network_requests → network_request → http_request / network_intercept.',
             },
           });
         case 'ping':

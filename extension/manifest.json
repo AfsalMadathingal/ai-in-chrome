@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI in Chrome",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Control Chrome from your terminal or any AI through a local native-messaging bridge. No login.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvqYW2M6jXuJ8FMfb/qHjQc94zcDAdfMw4i8aO70Lgym1R60TBi/PM4O5RLb2ki8xv9zf/pOxCQuk+5BmrBOe7Znd9R9Qc2sS5q88Qe+mxHl5KCgMHtmZuT+R3XX5B+HBTe212hbvnBsGAGZ0T/5IigvBNe/dw2rjJgRkgbwP/jsC8MOQuso+uEoS3alhXT3I5xWxy0pAnnaYdgrpV9YsVB72Jytl8j7vfPxgrQqhrNwUudwreKrQ8Es7+LmxandRdlhDaE+IXAlJwf8Z/CHIRlVcsfHTp9LG6cdwJe5YyHU83FB5jQBniXlCDl7b1KtO81nkcahvsNenAx8ZjlKKbQIDAQAB",
   "minimum_chrome_version": "116",
