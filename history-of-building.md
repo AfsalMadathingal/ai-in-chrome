@@ -145,6 +145,16 @@ To support this, the host now sends the AI's thinking text, screenshots from too
 - **`aichrome uninstall`:** removes the host registration (files or registry keys) and the data folder on every platform.
 - Tested on macOS; the Windows code paths are untested on a real Windows machine.
 
+## 13. Ollama in the side panel
+
+- A new **Ollama** choice in the side panel runs open-source models on your own computer, free and offline.
+- Ollama is only a model server, so the agent loop lives in the host (`src/ollama.js`): it streams the reply and thinking, runs the browser tools the model asks for, and feeds the results back until the model answers.
+- It uses a focused set of 13 browser tools, which small models handle better than the full set.
+- It goes through the same "Ask before acting" permission cards as Claude Code.
+- The panel lists installed models and picks one that supports tools (Qwen 3, Llama 3.1, gpt-oss…). The model and the Ollama address can be changed in Settings.
+- Clear messages appear when Ollama isn't running, a model isn't installed, or a model can't use tools.
+- Tested end to end with a fake Ollama server (thinking, a real tool call, Auto mode, an Ask-mode permission card, Deny, and the not-running error). Not yet tested with a real model, because Ollama isn't installed on this Mac.
+
 ## Where things stand
 
 - **On GitHub:** everything through the network tools (v0.2.0).

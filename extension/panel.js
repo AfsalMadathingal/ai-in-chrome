@@ -132,9 +132,10 @@ chrome.runtime.onConnect.addListener((port) => {
         subscribe(msg.sid);
         const c = await chat(msg.sid);
         port.postMessage({ type: 'history', events: c.events, busy: c.busy, terminal: terminalStatus() });
-        if (!deps.hostSend({ type: 'agent_list', sid: msg.sid })) port.postMessage({ type: 'event', ev: { t: 'available', host: false } });
+        await listAgents(msg.sid, port);
       } else if (msg.type === 'send') await send(msg);
       else if (msg.type === 'stop') stop(msg.sid);
+      else if (msg.type === 'refresh_agents') await listAgents(msg.sid, port);
       else if (msg.type === 'list_chats') port.postMessage({ type: 'chats', chats: await listChats() });
       else if (msg.type === 'delete_chat' || msg.type === 'reset') {
         await deleteChat(msg.sid);
@@ -146,12 +147,20 @@ chrome.runtime.onConnect.addListener((port) => {
   });
 });
 
+// Ask the host which AIs are installed (and which Ollama models), at the Ollama address set in the panel.
+async function listAgents(sid, port) {
+  const { panelSettings } = await chrome.storage.local.get('panelSettings');
+  if (!deps.hostSend({ type: 'agent_list', sid, ollamaUrl: panelSettings?.ollamaUrl || '' })) {
+    port.postMessage({ type: 'event', ev: { t: 'available', host: false } });
+  }
+}
+
 async function tabLine(tabId) {
   const tab = await chrome.tabs.get(tabId).catch(() => null);
   return tab ? `[Tab ${tab.id}: ${tab.title || ''} — ${tab.url || ''}]` : '[No tab]';
 }
 
-async function send({ sid, kind, text, tabId, cwd, mode, model, images = [], thumbs = [] }) {
+async function send({ sid, kind, text, tabId, cwd, mode, model, ollamaUrl, images = [], thumbs = [] }) {
   const c = await chat(sid);
   if (c.busy) throw new Error('Still working. Press Stop first.');
   c.kind = kind;
@@ -170,7 +179,7 @@ async function send({ sid, kind, text, tabId, cwd, mode, model, images = [], thu
     if (!terminalListening()) await emit(sid, { t: 'notice', text: 'Queued. No terminal AI is listening right now: in your terminal AI, say "listen to the AI in Chrome side panel".' });
     return;
   }
-  if (!deps.hostSend({ type: 'agent_send', sid, kind, text: full, cwd, mode, model, images, sessionId: c.sessionId })) {
+  if (!deps.hostSend({ type: 'agent_send', sid, kind, text: full, cwd, mode, model, ollamaUrl, images, sessionId: c.sessionId })) {
     throw new Error('Native host not connected. Run `aichrome install`, then click the extension icon.');
   }
 }

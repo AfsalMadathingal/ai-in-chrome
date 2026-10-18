@@ -12,7 +12,7 @@ side panel / aichrome CLI / any MCP client ──► local bridge (socket or nam
 
 ## Why AI in Chrome
 
-- **Uses the AI you already pay for.** The side panel runs your logged-in Claude Code or Codex. No API key, no per-token bill, no separate account for the extension.
+- **Uses the AI you already pay for, or a free local one.** The side panel runs your logged-in Claude Code or Codex, or an open-source model on your own computer through Ollama. No API key, no per-token bill, no separate account for the extension.
 - **Your real browser, logged in as you.** It drives the Chrome you're using, with your sessions, cookies and extensions, not a fresh headless profile.
 - **Works the way Claude in Chrome does.** Real mouse and keyboard events through the DevTools Protocol, an accessibility tree with `ref_N` element refs, an agent tab group and an on-page indicator showing where the AI acts.
 - **No blocked sites, any AI.** No domain blocklist and no vendor lock-in: use Claude, Codex, Cursor, Gemini CLI, Claude Desktop, or no AI at all.
@@ -25,7 +25,7 @@ side panel / aichrome CLI / any MCP client ──► local bridge (socket or nam
 
 | Area | What you get |
 |---|---|
-| **Side panel chat** | Claude Code / Codex / Terminal AI picker, streaming answers, thinking blocks, a step timeline with screenshots, plan checklists, permission cards, chat history, image attachments, slash commands, saved prompts, light and dark themes |
+| **Side panel chat** | Claude Code / Codex / Ollama (local models) / Terminal AI picker, streaming answers, thinking blocks, a step timeline with screenshots, plan checklists, permission cards, chat history, image attachments, slash commands, saved prompts, light and dark themes |
 | **Browser control** | Tabs, navigation, clicks, typing, keys, scrolling, drag, hover, zoom, screenshots (≤1568 px), form filling, page text, JavaScript |
 | **Page understanding** | Accessibility tree with `ref_N` refs (handles `display: contents` and hidden duplicates), `find` by words |
 | **Network & debugging** | Full capture with real Cookie and Authorization headers, bodies, WebSocket frames; copy as curl or fetch; replay with edits; `http_request` as the logged-in user (in page, from the extension with no CORS limits, or from Node); cookies incl. HttpOnly; localStorage and sessionStorage; live block, mock, rewrite and delay rules; HAR export; console logs and errors |
@@ -41,7 +41,7 @@ A snapshot from October 2026. See each project for its current state.
 | | AI in Chrome | Claude in Chrome (official) | Clones of the official code (claw-in-chrome, claude-for-chrome) | Clean-room rebuilds (open-claude-in-chrome) | Generic MCP browsers (Playwright MCP, Chrome DevTools MCP) |
 |---|---|---|---|---|---|
 | Chat side panel | ✅ | ✅ | ✅ | ❌ | ❌ |
-| AI in the panel | Your Claude Code / Codex login | Claude plan | API key, per token | — | — |
+| AI in the panel | Your Claude Code / Codex login, or local models via Ollama | Claude plan | API key, per token | — | — |
 | Any MCP client | ✅ | Claude only | Partly | ✅ | ✅ |
 | Your logged-in Chrome by default | ✅ | ✅ | ✅ | ✅ | ❌ separate profile by default |
 | Blocked sites | None | Some categories blocked | None | None | None |
@@ -234,6 +234,7 @@ Click the toolbar icon (or press Cmd/Ctrl+Shift+E) to open a chat panel next to 
 
 - **Claude Code**: runs your logged-in `claude` in the background. It controls the tab through the same tools and asks in the panel before clicking, typing or navigating, unless you pick "Act without asking".
 - **Codex**: runs your logged-in `codex` (not yet tested end to end).
+- **Ollama**: an open-source model running on your own computer (free, offline, private). Install [Ollama](https://ollama.com), pull a model that supports tools, for example `ollama pull qwen3`, and pick **Ollama** in the panel. It lists your installed models and picks a tool-capable one; you can change the model, and the Ollama address if it runs elsewhere, in Settings. Small models are slower and make more mistakes than Claude or Codex on long tasks; 8B+ models work best.
 - **Terminal AI**: an AI already open in your terminal answers the panel. Tell it "listen to the AI in Chrome side panel" and it uses `sidepanel_wait` / `sidepanel_reply` (not yet tested end to end).
 
 Pick the AI from the menu at the top. The panel shows its work as it goes:

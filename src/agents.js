@@ -6,6 +6,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { CLI, IS_WINDOWS, expandHome } from './paths.js';
+import { ollamaModels, runOllamaTurn, OLLAMA_URL } from './ollama.js';
 
 const SYSTEM_PROMPT = `You are chatting with the user through the AI in Chrome side panel in their real, logged-in Chrome browser.
 Control the browser with the ai-in-chrome MCP tools (tabs_context, navigate, computer, read_page, find, form_input, get_page_text, network tools…).
@@ -92,14 +93,15 @@ export class Agents {
     this.sessions = new Map(); // sid -> session
   }
 
-  available() {
-    return { claude: which('claude'), codex: which('codex') };
+  async available(ollamaUrl) {
+    const models = await ollamaModels(ollamaUrl);
+    return { claude: which('claude'), codex: which('codex'), ollama: models ? { url: ollamaUrl || OLLAMA_URL, models } : null };
   }
 
   handle(msg) {
     const { sid } = msg;
     try {
-      if (msg.type === 'agent_list') return this.emit(sid, { t: 'available', ...this.available() });
+      if (msg.type === 'agent_list') return this.available(msg.ollamaUrl).then((a) => this.emit(sid, { t: 'available', ...a }));
       if (msg.type === 'agent_send') return this.send(msg);
       if (msg.type === 'agent_stop') return this.stop(sid);
       if (msg.type === 'agent_reset') return this.reset(sid);
@@ -111,11 +113,13 @@ export class Agents {
 
   session(msg) {
     let s = this.sessions.get(msg.sid);
-    const opts = { kind: msg.kind || 'claude', cwd: expand(msg.cwd), mode: msg.mode || 'ask', model: msg.model || '' };
+    const opts = { kind: msg.kind || 'claude', cwd: expand(msg.cwd), mode: msg.mode || 'ask', model: msg.model || '', url: msg.ollamaUrl || '' };
     // Settings changed: restart the process but keep the conversation (resume by session id).
-    if (s && (s.kind !== opts.kind || s.cwd !== opts.cwd || s.mode !== opts.mode || s.model !== opts.model)) {
+    if (s && (s.kind !== opts.kind || s.cwd !== opts.cwd || s.mode !== opts.mode || s.model !== opts.model || s.url !== opts.url)) {
       s.proc?.kill();
-      s = { ...s, ...opts, proc: null, sessionId: s.kind === opts.kind ? s.sessionId : null };
+      s.abort?.abort();
+      // Ollama keeps its history here, so it survives a model or mode change; a different AI starts fresh.
+      s = { ...s, ...opts, proc: null, abort: null, sessionId: s.kind === opts.kind ? s.sessionId : null, messages: s.kind === opts.kind ? s.messages : null, think: undefined };
       this.sessions.set(msg.sid, s);
     }
     if (!s) {
@@ -134,6 +138,7 @@ export class Agents {
     const images = Array.isArray(msg.images) ? msg.images.filter((i) => i?.data) : [];
     if (s.kind === 'claude') this.sendClaude(s, msg.text, images);
     else if (s.kind === 'codex') this.sendCodex(s, msg.text, images);
+    else if (s.kind === 'ollama') this.sendOllama(s, msg.text, images);
     else throw new Error(`Unknown agent "${s.kind}"`);
   }
 
@@ -144,12 +149,14 @@ export class Agents {
       // Ask Claude Code to interrupt the turn; kill it if it doesn't stop soon (the session resumes next time).
       s.proc.stdin.write(JSON.stringify({ type: 'control_request', request_id: `int-${Date.now()}`, request: { subtype: 'interrupt' } }) + '\n');
       s.stopTimer = setTimeout(() => s.busy && s.proc?.kill(), 3000);
-    } else s.proc?.kill();
+    } else if (s.kind === 'ollama') s.abort?.abort();
+    else s.proc?.kill();
   }
 
   reset(sid) {
     const s = this.sessions.get(sid);
     s?.proc?.kill();
+    s?.abort?.abort();
     this.sessions.delete(sid);
     this.emit(sid, { t: 'busy', on: false });
   }
@@ -309,6 +316,23 @@ export class Agents {
       if (s.proc === proc) s.proc = null;
       if (!done) this.finish(s, signal ? { t: 'stopped' } : { t: 'error', message: `Codex exited (${code}). ${err.trim().split('\n').slice(-3).join(' ')}` });
     });
+  }
+
+  // ---------- Ollama: a local model; the agent loop runs here (src/ollama.js) ----------
+  sendOllama(s, text, images) {
+    const abort = new AbortController();
+    s.abort = abort;
+    this.log('agent ollama run', s.sid, s.model || '(no model)', s.url || OLLAMA_URL);
+    runOllamaTurn(s, text, images, { emit: (ev) => this.emit(s.sid, ev), signal: abort.signal, systemPrompt: SYSTEM_PROMPT })
+      .then((r) => this.finish(s, { t: 'done', ms: r.ms, tokens: r.tokens || undefined, turns: r.turns }))
+      .catch((e) => {
+        if (abort.signal.aborted || e.name === 'AbortError') return this.finish(s, { t: 'stopped' });
+        const refused = e.cause?.code === 'ECONNREFUSED' || /fetch failed/i.test(e.message);
+        this.finish(s, { t: 'error', message: refused ? `Can't reach Ollama at ${s.url || OLLAMA_URL}. Start the Ollama app (or run \`ollama serve\`).` : e.message });
+      })
+      .finally(() => {
+        if (s.abort === abort) s.abort = null;
+      });
   }
 
   shutdown() {

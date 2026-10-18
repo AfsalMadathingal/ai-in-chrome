@@ -91,8 +91,9 @@
       <section>
         <h3>Run</h3>
         <label class="field">Model <input id="model" list="models" placeholder="default" spellcheck="false" /></label>
-        <datalist id="models"><option value="sonnet"></option><option value="opus"></option><option value="haiku"></option><option value="gpt-5-codex"></option><option value="gpt-5"></option></datalist>
-        <label class="field">Working folder <input id="cwd" placeholder="~" spellcheck="false" /></label>
+        <datalist id="models"></datalist>
+        <label class="field" id="ollamaUrlField" hidden>Ollama address <input id="ollamaUrl" placeholder="http://127.0.0.1:11434" spellcheck="false" /></label>
+        <label class="field" id="cwdField">Working folder <input id="cwd" placeholder="~" spellcheck="false" /></label>
       </section>
       <section>
         <h3>Appearance</h3>

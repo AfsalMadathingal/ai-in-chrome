@@ -17,7 +17,7 @@ let terminal = { listening: false, recent: false };
 let lastModel = '';
 let attachments = []; // { mediaType, data, thumb }
 let chatList = [];
-let settings = { agent: 'claude', mode: 'ask', cwd: '~', model: '', theme: 'system', shortcuts: [] };
+let settings = { agent: 'claude', mode: 'ask', cwd: '~', model: '', ollamaModel: '', ollamaUrl: '', theme: 'system', shortcuts: [] };
 
 // Per-render state for the assistant turn being built.
 let turn = null;
@@ -659,8 +659,32 @@ function updateStatus() {
 const AGENTS = {
   claude: { name: 'Claude Code', desc: 'Your logged-in Claude Code, run in the background', icon: 'spark' },
   codex: { name: 'Codex', desc: 'Your logged-in Codex CLI', icon: 'code' },
+  ollama: { name: 'Ollama', desc: 'Open-source models running on your computer', icon: 'bot' },
   terminal: { name: 'Terminal AI', desc: 'An AI already open in your terminal answers', icon: 'terminal' },
 };
+
+// Model suggestions per AI. Ollama lists the models installed on this computer.
+const MODEL_HINTS = { claude: ['sonnet', 'opus', 'haiku'], codex: ['gpt-5-codex', 'gpt-5'] };
+const isOllama = () => settings.agent === 'ollama';
+const currentModel = () => (isOllama() ? settings.ollamaModel : settings.model);
+// Tool calling is what lets a model drive the browser; prefer families known to support it.
+const TOOL_MODELS = /^(qwen3|qwen2\.5|llama3\.[123]|gpt-oss|mistral|mistral-small|granite3|command-r|hermes3|devstral|magistral|deepseek-v3)/i;
+
+function renderModelField() {
+  const models = isOllama() ? available.ollama?.models || [] : MODEL_HINTS[settings.agent] || [];
+  $('models').innerHTML = models.map((m) => `<option value="${esc(m)}"></option>`).join('');
+  if (document.activeElement !== $('model')) $('model').value = currentModel() || '';
+  $('model').placeholder = isOllama() ? (models[0] || 'e.g. qwen3') : 'default';
+  $('ollamaUrlField').hidden = !isOllama();
+  $('cwdField').hidden = isOllama();
+  if (document.activeElement !== $('ollamaUrl')) $('ollamaUrl').value = settings.ollamaUrl || '';
+  // First time on Ollama: pick an installed model that can use tools.
+  if (isOllama() && !settings.ollamaModel && models.length) {
+    settings.ollamaModel = models.find((m) => TOOL_MODELS.test(m)) || models[0];
+    chrome.storage.local.set({ panelSettings: settings });
+    $('model').value = settings.ollamaModel;
+  }
+}
 const MODES = {
   ask: { name: 'Ask before acting', short: 'Ask', desc: 'Approve clicks, typing and navigation', icon: 'shield' },
   auto: { name: 'Act without asking', short: 'Auto', desc: 'Browser actions run without prompts', icon: 'bolt' },
@@ -670,6 +694,7 @@ function agentState(k) {
   if (available.host === false) return 'off';
   if (k === 'terminal') return terminal.listening ? 'on' : '';
   if (!(k in available)) return '';
+  if (k === 'ollama') return available.ollama?.models?.length ? 'on' : 'off';
   return available[k] ? 'on' : 'off';
 }
 
@@ -703,8 +728,16 @@ function renderAgentUI() {
 
   const h = $('agentHint');
   if (settings.agent === 'terminal') h.innerHTML = 'In any terminal AI connected to the <code>ai-in-chrome</code> MCP server, say: <code>listen to the AI in Chrome side panel</code>.';
-  else if (settings.agent === 'claude') h.innerHTML = available.claude ? `Uses <code>${esc(available.claude)}</code>.` : 'Claude Code not found yet. Install it, then run <code>aichrome install</code> again.';
+  else if (isOllama()) {
+    const o = available.ollama;
+    h.innerHTML = !o
+      ? 'Ollama isn\'t running. Install it from <code>ollama.com</code>, open it, then pull a model: <code>ollama pull qwen3</code>.'
+      : !o.models.length
+        ? `Ollama is running at <code>${esc(o.url)}</code> but has no models. Run <code>ollama pull qwen3</code>.`
+        : `Local models at <code>${esc(o.url)}</code>. Pick one that supports tools (qwen3, llama3.1, gpt-oss…) so it can control the browser.`;
+  } else if (settings.agent === 'claude') h.innerHTML = available.claude ? `Uses <code>${esc(available.claude)}</code>.` : 'Claude Code not found yet. Install it, then run <code>aichrome install</code> again.';
   else h.innerHTML = available.codex ? `Uses <code>${esc(available.codex)}</code>.` : 'Codex not found yet. Install it, then run <code>aichrome install</code> again.';
+  renderModelField();
   $('hostStatus').innerHTML = available.host === false
     ? '<span class="dot off"></span> Native host not connected. Run <code>aichrome install</code>, then click the extension icon.'
     : '<span class="dot on"></span> Native host connected.';
@@ -720,6 +753,7 @@ function setSetting(key, value) {
   settings[key] = value;
   chrome.storage.local.set({ panelSettings: settings });
   if (key === 'theme') applyTheme();
+  if ((key === 'agent' && value === 'ollama') || key === 'ollamaUrl') port?.postMessage({ type: 'refresh_agents', sid });
   renderAgentUI();
 }
 
@@ -999,7 +1033,7 @@ async function send(text) {
   const images = attachments.map(({ mediaType, data }) => ({ mediaType, data }));
   const thumbs = attachments.map((a) => a.thumb);
   if (images.length && settings.agent === 'terminal') toast('Images are not sent to a terminal AI');
-  port?.postMessage({ type: 'send', sid, kind: settings.agent, text, tabId: tab?.id, cwd: settings.cwd || '~', mode: settings.mode, model: settings.model, images, thumbs });
+  port?.postMessage({ type: 'send', sid, kind: settings.agent, text, tabId: tab?.id, cwd: settings.cwd || '~', mode: settings.mode, model: currentModel(), ollamaUrl: settings.ollamaUrl, images, thumbs });
   input.value = '';
   attachments = [];
   renderAttachments();
@@ -1053,9 +1087,9 @@ async function init() {
   $('historySearch').addEventListener('input', renderHistory);
   $('modeSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('mode', b.dataset.v)));
   $('themeSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('theme', b.dataset.v)));
-  $('model').value = settings.model;
   $('cwd').value = settings.cwd;
-  for (const id of ['model', 'cwd']) $(id).addEventListener('change', () => setSetting(id, $(id).value.trim()));
+  $('model').addEventListener('change', () => setSetting(isOllama() ? 'ollamaModel' : 'model', $('model').value.trim()));
+  for (const id of ['cwd', 'ollamaUrl']) $(id).addEventListener('change', () => setSetting(id, $(id).value.trim()));
   $('shortcutForm').addEventListener('submit', (e) => {
     e.preventDefault();
     const name = $('scName').value.trim().replace(/^\//, '');
