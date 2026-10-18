@@ -49,6 +49,126 @@ A snapshot from October 2026. See each project for its current state.
 | CLI without any AI | ✅ | ❌ | ❌ | ❌ | Playwright CLI |
 | Open source license | MIT | Closed | Anthropic's code | MIT | Apache-2.0 |
 
+## How it works
+
+### In simple words
+
+Think of it as a **remote control for Chrome** with four parts:
+
+1. **The extension** lives inside Chrome. It's the hands: it clicks, types, scrolls, reads pages and takes screenshots in your real tabs.
+2. **The native host** is a small helper program on your computer that Chrome starts by itself. It's the messenger between Chrome and everything outside Chrome.
+3. **The AI** is your own Claude Code, Codex or other assistant. It's the brain: it decides what to do next.
+4. **You** talk to the AI from the **side panel** in Chrome, from your **terminal**, or you skip the AI and type `aichrome` commands yourself.
+
+When you ask "like this video", the AI reads the page, asks the extension to click the Like button, looks at the result, and tells you it's done. Every step travels through the messenger, and nothing goes through a server of ours.
+
+### The big picture
+
+```mermaid
+flowchart LR
+    U(["You"])
+
+    subgraph CHROME["Chrome browser"]
+        SP["Side panel<br/>chat window"]
+        EXT["Extension<br/>(the hands)"]
+        TAB["Your real tabs<br/>logged in as you"]
+    end
+
+    subgraph PC["Your computer"]
+        HOST["Native host<br/>(the messenger)"]
+        AI["Your AI<br/>Claude Code / Codex<br/>(the brain)"]
+        MCP["aichrome MCP server<br/>(browser tools)"]
+        CLI["aichrome CLI<br/>(no AI needed)"]
+        OTHER["Any MCP client<br/>Cursor, Gemini CLI, Claude Desktop"]
+    end
+
+    CLOUD[("AI provider<br/>Anthropic / OpenAI<br/>via your own login")]
+
+    U -->|types a message| SP
+    U -->|types commands| CLI
+    SP <-->|chat messages| EXT
+    EXT <-->|native messaging| HOST
+    HOST -->|starts and streams| AI
+    AI <-->|thinking| CLOUD
+    AI -->|calls tools| MCP
+    OTHER -->|calls tools| MCP
+    MCP <-->|local socket| HOST
+    CLI <-->|local socket| HOST
+    EXT -->|"DevTools Protocol:<br/>click, type, screenshot"| TAB
+```
+
+There are two kinds of traffic:
+
+- **Chat traffic** (side panel only): your message goes from the panel to the extension, then to the native host, which runs your AI in the background. The AI's answer, thinking and steps stream back the same way into the panel.
+- **Tool traffic** (side panel, terminal AI, MCP clients and CLI): whenever something wants to act on the browser ("click ref_12"), the request goes through the `aichrome` MCP server or CLI, over a private local socket to the native host, then to the extension, which does it in the tab with the Chrome DevTools Protocol. The result (text or a screenshot) returns along the same path.
+
+### One side panel message, step by step
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor You
+    participant Panel as Side panel
+    participant Ext as Extension
+    participant Host as Native host
+    participant AI as Claude Code / Codex
+    participant Tools as aichrome MCP server
+    participant Tab as Your tab
+
+    You->>Panel: "Like this video"
+    Panel->>Ext: message + which tab you're on
+    Ext->>Host: agent_send (native messaging)
+    Host->>AI: start or resume your logged-in AI
+    AI-->>Panel: thinking streams in (via Host and Ext)
+    AI->>Tools: find("like button")
+    Tools->>Host: tool request (local socket)
+    Host->>Ext: tool request
+    Ext->>Tab: read the page's accessibility tree
+    Tab-->>Ext: button "Like" [ref_12]
+    Ext-->>AI: result (back through Host and Tools)
+    AI->>Ext: may I click ref_12? (permission check via Tools and Host)
+    Ext->>Panel: "Allow click on youtube.com?"
+    You->>Panel: Allow once
+    Panel-->>AI: allowed
+    AI->>Tools: computer left_click ref_12
+    Tools->>Host: tool request
+    Host->>Ext: tool request
+    Ext->>Tab: real mouse click (DevTools Protocol)
+    Ext-->>AI: done + screenshot
+    AI-->>Panel: "Liked it. The count is now 16K."
+```
+
+### Who asks before acting
+
+```mermaid
+flowchart TD
+    A["AI wants to use a browser tool"] --> B{"Read-only?<br/>screenshot, read page, find…"}
+    B -->|yes| OK["Run it"]
+    B -->|no| C{"Mode is<br/>Act without asking?"}
+    C -->|yes| OK
+    C -->|no| D{"Already 'Always allowed'<br/>in this chat?"}
+    D -->|yes| OK
+    D -->|no| E["Show a card in the side panel"]
+    E --> F{"Your choice"}
+    F -->|Allow once / Always allow| OK
+    F -->|Deny or no answer in 5 min| NO["Tell the AI it was denied"]
+```
+
+### The other ways in
+
+| You use… | Path to the browser |
+|---|---|
+| **Side panel** | Panel → extension → native host → your AI → MCP server → native host → extension → tab |
+| **Terminal AI listening to the panel** | Panel → extension → waits until your terminal AI calls `sidepanel_wait` → it acts with the same tools → answers with `sidepanel_reply` |
+| **Any MCP client** (Claude Code, Cursor…) | AI → `aichrome mcp` → local socket → native host → extension → tab |
+| **CLI, no AI** | `aichrome click ref_1` → local socket → native host → extension → tab |
+
+### The parts
+
+- **Extension** (`extension/`): an MV3 service worker. It runs tools through `chrome.debugger` (CDP): input events, screenshots, JavaScript, console and network. Content scripts build the ref tree and draw the on-page indicator. An offscreen page encodes GIFs with [gif.js](https://github.com/jnordberg/gif.js) (MIT, in `extension/vendor/`). `panel.js` keeps chats, history and permission prompts; `sidepanel.*` is the chat UI.
+- **Native host** (`src/host.js`): Chrome starts it via native messaging when the extension loads. It relays tool requests between the extension and a local socket (`~/.ai-in-chrome/bridge.sock`, or a per-user named pipe on Windows), splitting large messages into chunks to fit Chrome's 1 MB limit. For side panel chats it runs your AI in the background (`src/agents.js`) and streams its events back.
+- **`aichrome`** (`bin/`, `src/`): the CLI, the MCP server, and local file handling (it reads upload paths and saves GIFs and HAR files).
+
 ## Quick start
 
 ```bash
@@ -164,12 +284,6 @@ aichrome install-skill               # teaches Claude how to use it well
 | `file_upload`, `upload_image` | Local files or screenshots into file inputs or drop zones (10 MB max) |
 | `gif_creator` | Record actions and export an annotated GIF |
 | `resize_window`, `cdp_command`, `extension_reload` | Window size, raw DevTools Protocol, reload the extension |
-
-## How it works
-
-- **Extension** (`extension/`): an MV3 service worker. It runs tools through `chrome.debugger` (CDP): input events, screenshots, JS, console and network. Content scripts build the ref tree and draw the on-page indicator. An offscreen page encodes GIFs with [gif.js](https://github.com/jnordberg/gif.js) (MIT, in `extension/vendor/`).
-- **Native host** (`src/host.js`): Chrome starts it via native messaging when the extension loads. It relays requests between the extension and a local socket (a named pipe on Windows), splitting large ones into chunks to fit Chrome's 1 MB message limit.
-- **`aichrome`** (`bin/`, `src/`): the CLI, the MCP server, and the local file handling (it reads upload paths and saves GIFs).
 
 ## Security
 
