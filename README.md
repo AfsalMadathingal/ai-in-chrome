@@ -1,16 +1,53 @@
 # AI in Chrome
 
-Control your **real, logged-in Chrome** from the terminal, or hand it to **any AI** over MCP (Claude Code, Codex, Cursor, Gemini CLI, Claude Desktop…). No login, no cloud, no API key.
+**Claude in Chrome for any AI you already use.** Your terminal AI (Claude Code, Codex, or any MCP client) drives your **real, logged-in Chrome** from a side panel, the terminal, or MCP. No extension login, no API key, no blocked sites, MIT open source.
 
-It controls the browser the same way Claude in Chrome does:
-- the Chrome DevTools Protocol through `chrome.debugger`;
-- an accessibility tree with `ref_N` element refs;
-- a native-messaging bridge;
-- an agent tab group and an on-page indicator.
+![License: MIT](https://img.shields.io/badge/license-MIT-orange) ![Version](https://img.shields.io/badge/version-0.3.0-blue) ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey) ![Node](https://img.shields.io/badge/node-%E2%89%A520-green) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
 
 ```
-aichrome CLI / any MCP client ──► ~/.ai-in-chrome/bridge.sock (Windows: named pipe) ──► native host (started by Chrome) ──► extension ──► DevTools Protocol ──► tab
+side panel / aichrome CLI / any MCP client ──► local bridge (socket or named pipe) ──► native host (started by Chrome) ──► extension ──► DevTools Protocol ──► your tab
 ```
+
+## Why AI in Chrome
+
+- **Uses the AI you already pay for.** The side panel runs your logged-in Claude Code or Codex. No API key, no per-token bill, no separate account for the extension.
+- **Your real browser, logged in as you.** It drives the Chrome you're using, with your sessions, cookies and extensions, not a fresh headless profile.
+- **Works the way Claude in Chrome does.** Real mouse and keyboard events through the DevTools Protocol, an accessibility tree with `ref_N` element refs, an agent tab group and an on-page indicator showing where the AI acts.
+- **No blocked sites, any AI.** No domain blocklist and no vendor lock-in: use Claude, Codex, Cursor, Gemini CLI, Claude Desktop, or no AI at all.
+- **Built for developers who debug the web.** Capture traffic with real headers, cookies and tokens; replay or edit requests; mock and rewrite responses live; send requests as the logged-in user; export HAR. An AI can debug your web app end to end, without anyone copying things out of DevTools.
+- **Three ways to drive it.** Chat in the side panel, connect any AI over MCP, or type `aichrome` commands yourself.
+- **Private and local.** Nothing goes through a server of ours. The bridge only accepts your user account, and only this extension ID can start it.
+- **Small, readable, yours.** About 5k lines of plain JavaScript, zero npm dependencies, clean-room code (not copied from Anthropic's extension), MIT licensed.
+
+## Features at a glance
+
+| Area | What you get |
+|---|---|
+| **Side panel chat** | Claude Code / Codex / Terminal AI picker, streaming answers, thinking blocks, a step timeline with screenshots, plan checklists, permission cards, chat history, image attachments, slash commands, saved prompts, light and dark themes |
+| **Browser control** | Tabs, navigation, clicks, typing, keys, scrolling, drag, hover, zoom, screenshots (≤1568 px), form filling, page text, JavaScript |
+| **Page understanding** | Accessibility tree with `ref_N` refs (handles `display: contents` and hidden duplicates), `find` by words |
+| **Network & debugging** | Full capture with real Cookie and Authorization headers, bodies, WebSocket frames; copy as curl or fetch; replay with edits; `http_request` as the logged-in user (in page, from the extension with no CORS limits, or from Node); cookies incl. HttpOnly; localStorage and sessionStorage; live block, mock, rewrite and delay rules; HAR export; console logs and errors |
+| **Files & media** | Upload local files into `<input type=file>` or drop zones (up to 10 MB), drop screenshots onto pages, record annotated GIFs of the AI's actions |
+| **Safety** | "Ask before acting" mode with Allow once / Always allow / Deny, read-only actions auto-allowed, a visual indicator on the page, an "AI" tab group |
+| **Speed** | Navigation returns at DOM ready (~0.2 s), clicks in ~15 ms, `aichrome run` / `aichrome shell` run many steps in one process |
+| **Platforms** | macOS, Linux, Windows 10/11; Chrome, Brave, Edge, Arc, Chromium |
+
+## How it compares
+
+A snapshot from October 2026. See each project for its current state.
+
+| | AI in Chrome | Claude in Chrome (official) | Clones of the official code (claw-in-chrome, claude-for-chrome) | Clean-room rebuilds (open-claude-in-chrome) | Generic MCP browsers (Playwright MCP, Chrome DevTools MCP) |
+|---|---|---|---|---|---|
+| Chat side panel | ✅ | ✅ | ✅ | ❌ | ❌ |
+| AI in the panel | Your Claude Code / Codex login | Claude plan | API key, per token | — | — |
+| Any MCP client | ✅ | Claude only | Partly | ✅ | ✅ |
+| Your logged-in Chrome by default | ✅ | ✅ | ✅ | ✅ | ❌ separate profile by default |
+| Blocked sites | None | Some categories blocked | None | None | None |
+| Live mock / rewrite of requests | ✅ | ❌ | ❌ | ❌ | Limited |
+| Requests as the logged-in user, HAR export | ✅ | ❌ | ❌ | ❌ | Partly |
+| GIF recording | ✅ | ✅ | ✅ | Placeholder only | Video / trace instead |
+| CLI without any AI | ✅ | ❌ | ❌ | ❌ | Playwright CLI |
+| Open source license | MIT | Closed | Anthropic's code | MIT | Apache-2.0 |
 
 ## Quick start
 
@@ -74,8 +111,8 @@ Run `aichrome help` for every shortcut, and `aichrome tools` for every tool and 
 Click the toolbar icon (or press Cmd/Ctrl+Shift+E) to open a chat panel next to the page. It talks to the AI you already use in your terminal, with no extra login:
 
 - **Claude Code**: runs your logged-in `claude` in the background. It controls the tab through the same tools and asks in the panel before clicking, typing or navigating, unless you pick "Act without asking".
-- **Codex**: runs your logged-in `codex` (untested).
-- **Terminal AI**: an AI already open in your terminal answers the panel. Tell it "listen to the AI in Chrome side panel" and it uses `sidepanel_wait` / `sidepanel_reply` (untested).
+- **Codex**: runs your logged-in `codex` (not yet tested end to end).
+- **Terminal AI**: an AI already open in your terminal answers the panel. Tell it "listen to the AI in Chrome side panel" and it uses `sidepanel_wait` / `sidepanel_reply` (not yet tested end to end).
 
 Pick the AI from the menu at the top. The panel shows its work as it goes:
 
@@ -131,12 +168,12 @@ aichrome install-skill               # teaches Claude how to use it well
 ## How it works
 
 - **Extension** (`extension/`): an MV3 service worker. It runs tools through `chrome.debugger` (CDP): input events, screenshots, JS, console and network. Content scripts build the ref tree and draw the on-page indicator. An offscreen page encodes GIFs with [gif.js](https://github.com/jnordberg/gif.js) (MIT, in `extension/vendor/`).
-- **Native host** (`src/host.js`): Chrome starts it via native messaging when the extension loads. It relays requests between the extension and a Unix socket, splitting large ones into chunks to fit Chrome's 1 MB message limit.
+- **Native host** (`src/host.js`): Chrome starts it via native messaging when the extension loads. It relays requests between the extension and a local socket (a named pipe on Windows), splitting large ones into chunks to fit Chrome's 1 MB message limit.
 - **`aichrome`** (`bin/`, `src/`): the CLI, the MCP server, and the local file handling (it reads upload paths and saves GIFs).
 
 ## Security
 
-- The socket `~/.ai-in-chrome/bridge.sock` is `0600` inside a `0700` folder, so only your user account can drive the browser.
+- The socket `~/.ai-in-chrome/bridge.sock` is `0600` inside a `0700` folder, so only your user account can drive the browser. On Windows, the bridge is a per-user named pipe; other standard accounts can't connect, but administrators can.
 - Chrome only allows the extension ID in the host manifest (`nknkkmpocjbicnfhkgkgiiemkddajodl`, fixed by the manifest `key`) to start the bridge.
 - Nothing leaves your machine. The AI you connect sees what the tools return (page text, screenshots), so only connect AIs you trust with your browser.
 - The network tools show **real session cookies and auth tokens** (that's the point, for debugging). Whatever AI you connect sees them too, and HAR exports contain them. Don't paste that output or share HAR files publicly.
@@ -151,6 +188,16 @@ aichrome install-skill               # teaches Claude how to use it well
 - After editing extension code: `aichrome reload-extension`. After moving the folder or changing Node: `aichrome install`.
 - Logs: `~/.ai-in-chrome/host.log`.
 - Platforms: macOS, Linux and Windows 10/11.
+
+## Roadmap
+
+- Benchmark against the official extension and other tools, with results in this README.
+- `browser_batch`: several actions in one call, for speed and lower token use.
+- A release zip and a demo GIF of the side panel.
+- Bookmarks and history tools, an AI-powered `find`, optional human-like input.
+- Test Codex mode, Terminal AI mode and Windows on real machines.
+
+Issues and pull requests are welcome.
 
 ## License
 
