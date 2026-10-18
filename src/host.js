@@ -3,7 +3,7 @@
 // stdout belongs to Chrome's framing protocol: never print anything else to it.
 import fs from 'node:fs';
 import net from 'node:net';
-import { HOME, SOCKET, LOG_FILE } from './paths.js';
+import { HOME, SOCKET, LOG_FILE, IS_WINDOWS } from './paths.js';
 import { Agents } from './agents.js';
 
 function log(...args) {
@@ -105,24 +105,32 @@ export function runHost() {
     }
   });
 
-  try {
-    fs.unlinkSync(SOCKET);
-  } catch {}
-  server.listen(SOCKET, () => {
-    fs.chmodSync(SOCKET, 0o600);
-    socketIno = fs.statSync(SOCKET).ino;
+  if (!IS_WINDOWS) {
+    try {
+      fs.unlinkSync(SOCKET);
+    } catch {}
+  }
+  let retries = 0;
+  const listen = () => server.listen(SOCKET, () => {
+    if (!IS_WINDOWS) {
+      fs.chmodSync(SOCKET, 0o600);
+      socketIno = fs.statSync(SOCKET).ino;
+    }
     log('listening on', SOCKET);
   });
   server.on('error', (e) => {
+    // Windows named pipes can't be taken over: wait for the previous host to exit (extension reload).
+    if (IS_WINDOWS && e.code === 'EADDRINUSE' && ++retries <= 20) return setTimeout(listen, 250);
     log('socket error', e.message);
     process.exit(1);
   });
+  listen();
 
   function shutdown() {
     agents.shutdown();
     // Only remove the socket if it is still ours (a newer host may have replaced it).
     try {
-      if (socketIno && fs.statSync(SOCKET).ino === socketIno) fs.unlinkSync(SOCKET);
+      if (!IS_WINDOWS && socketIno && fs.statSync(SOCKET).ino === socketIno) fs.unlinkSync(SOCKET);
     } catch {}
     log('host exiting');
     process.exit(0);

@@ -1,6 +1,6 @@
 # Installing AI in Chrome
 
-About 3 minutes. You need **macOS or Linux**, **Node.js 20+**, and a Chromium browser: Chrome, Brave, Edge, Arc or Chromium. Windows isn't supported yet.
+About 3 minutes. You need **macOS, Linux or Windows 10/11**, **Node.js 20+**, and a Chromium browser: Chrome, Brave, Edge, Arc or Chromium. On Windows, run the commands below in PowerShell or Windows Terminal.
 
 ## 1. Get the code and the `aichrome` command
 
@@ -19,7 +19,9 @@ Don't want a global command? Use `node /path/to/ai-in-chrome/bin/aichrome.js` an
 aichrome install
 ```
 
-This writes `com.ai_in_chrome.bridge.json` into each installed browser's `NativeMessagingHosts` folder, plus a small launcher at `~/.ai-in-chrome/native-host.sh`. Chrome uses these to start the bridge when the extension loads. Only the extension ID `nknkkmpocjbicnfhkgkgiiemkddajodl` may use it.
+On macOS and Linux this writes `com.ai_in_chrome.bridge.json` into each installed browser's `NativeMessagingHosts` folder, plus a small launcher at `~/.ai-in-chrome/native-host.sh`.
+
+On Windows it writes the manifest and a launcher (`native-host.bat`) to `%USERPROFILE%\.ai-in-chrome`, and registers the manifest under `HKCU\Software\<browser>\NativeMessagingHosts\com.ai_in_chrome.bridge` for Chrome, Chromium, Edge and Brave. No admin rights are needed. The bridge uses a per-user named pipe (`\\.\pipe\ai-in-chrome-<username>`) instead of a socket file. Chrome uses these to start the bridge when the extension loads. Only the extension ID `nknkkmpocjbicnfhkgkgiiemkddajodl` may use it.
 
 Run `aichrome install` again if you move the folder or change Node versions.
 
@@ -69,6 +71,8 @@ args = ["/path/to/ai-in-chrome/bin/aichrome.js", "mcp"]
 }
 ```
 
+On Windows, use paths like `"C:\\Program Files\\nodejs\\node.exe"` and `"C:\\Users\\you\\ai-in-chrome\\bin\\aichrome.js"` (find them with `where node`).
+
 Restart the client afterwards; MCP servers load at startup.
 
 **Any agent with a shell** can skip MCP and run `aichrome …` commands directly. Point it at [`skills/ai-in-chrome/SKILL.md`](skills/ai-in-chrome/SKILL.md).
@@ -83,11 +87,19 @@ Restart the client afterwards; MCP servers load at startup.
 | Wrong extension ID | You loaded a different folder. Load the repo's `extension/` folder. |
 | `Cannot access a chrome:// URL` | Browser pages (`chrome://`, the Web Store) can't be automated. Open a normal tab with `aichrome open <url>`. |
 | MCP client can't start the server | Use absolute paths for both `node` and `aichrome.js` in its config. |
+| Windows: icon shows **off** after install | Check the key exists: `reg query HKCU\Software\Google\Chrome\NativeMessagingHosts\com.ai_in_chrome.bridge`. Run `aichrome install` again, then restart Chrome. Logs are in `%USERPROFILE%\.ai-in-chrome\host.log`. |
+| Windows: side panel says Claude Code / Codex not found | Install it so `where claude` (or `where codex`) finds it in the same terminal, then run `aichrome install` again so the launcher saves that PATH. |
 
 ## Uninstall
 
 ```bash
+aichrome uninstall   # removes the native host registration (files or registry keys) and ~/.ai-in-chrome
 npm rm -g ai-in-chrome
+```
+
+Or by hand on macOS / Linux:
+
+```bash
 rm -rf ~/.ai-in-chrome
 rm ~/Library/Application\ Support/*/NativeMessagingHosts/com.ai_in_chrome.bridge.json \
    ~/Library/Application\ Support/*/*/NativeMessagingHosts/com.ai_in_chrome.bridge.json   # macOS

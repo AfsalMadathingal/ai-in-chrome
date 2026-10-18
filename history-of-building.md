@@ -134,6 +134,17 @@ The panel was rebuilt to feel like Claude in Chrome, Codex and Antigravity:
 
 To support this, the host now sends the AI's thinking text, screenshots from tool results (up to about 500 KB, to stay under Chrome's 1 MB message limit), to-do lists, token counts, and images from your messages to Claude Code or Codex.
 
+## 12. MIT license and Windows support
+
+- **License:** the project is now MIT licensed (`LICENSE`), so anyone can use, change and share it.
+- **Windows 10/11:**
+  - The bridge uses a per-user named pipe instead of a Unix socket file.
+  - `aichrome install` writes a `.bat` launcher and registers the host in the registry (`HKCU`) for Chrome, Chromium, Edge and Brave. No admin rights are needed.
+  - The side panel finds `claude` / `codex` as `.exe` or npm `.cmd` shims, and runs the JavaScript behind a shim directly with Node to avoid `cmd.exe` quoting problems.
+  - Paths accept `~\` as well as `~/`.
+- **`aichrome uninstall`:** removes the host registration (files or registry keys) and the data folder on every platform.
+- Tested on macOS; the Windows code paths are untested on a real Windows machine.
+
 ## Where things stand
 
 - **On GitHub:** everything through the network tools (v0.2.0).

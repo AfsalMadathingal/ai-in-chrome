@@ -20,7 +20,7 @@ Run `aichrome status`.
   git clone https://github.com/AfsalMadathingal/ai-in-chrome.git ~/ai-in-chrome   # or wherever the user prefers
   cd ~/ai-in-chrome && npm link && aichrome install
   ```
-  Requires Node.js 20+ on macOS or Linux. If `npm link` isn't allowed, use `node ~/ai-in-chrome/bin/aichrome.js` in place of `aichrome`.
+  Requires Node.js 20+ on macOS, Linux or Windows. If `npm link` isn't allowed, use `node ~/ai-in-chrome/bin/aichrome.js` in place of `aichrome`.
 - **"not connected".** Usually the extension isn't loaded. You can't do this step yourself; browsers forbid scripted installs of unpacked extensions. Ask the user:
   > Open `chrome://extensions`, turn on Developer mode, click **Load unpacked**, and select `<repo>/extension`. The ID should be `nknkkmpocjbicnfhkgkgiiemkddajodl`.
 

@@ -9,7 +9,7 @@ It controls the browser the same way Claude in Chrome does:
 - an agent tab group and an on-page indicator.
 
 ```
-aichrome CLI / any MCP client ──► ~/.ai-in-chrome/bridge.sock ──► native host (started by Chrome) ──► extension ──► DevTools Protocol ──► tab
+aichrome CLI / any MCP client ──► ~/.ai-in-chrome/bridge.sock (Windows: named pipe) ──► native host (started by Chrome) ──► extension ──► DevTools Protocol ──► tab
 ```
 
 ## Quick start
@@ -150,4 +150,8 @@ aichrome install-skill               # teaches Claude how to use it well
 - Paste (`cmd+v`) may not work from synthetic input. Use `type` instead.
 - After editing extension code: `aichrome reload-extension`. After moving the folder or changing Node: `aichrome install`.
 - Logs: `~/.ai-in-chrome/host.log`.
-- Platforms: macOS and Linux. Windows isn't supported yet.
+- Platforms: macOS, Linux and Windows 10/11.
+
+## License
+
+[MIT](LICENSE)

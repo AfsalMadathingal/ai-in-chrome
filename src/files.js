@@ -14,7 +14,7 @@ const MIME = {
   '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
 };
 
-const expand = (p) => path.resolve(p.replace(/^~(?=$|\/)/, os.homedir()));
+const expand = (p) => path.resolve(p.replace(/^~(?=$|[\\/])/, os.homedir()));
 
 function readLocal(p) {
   const file = expand(p);

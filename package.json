@@ -2,6 +2,7 @@
   "name": "ai-in-chrome",
   "version": "0.3.0",
   "description": "Control Chrome from your terminal or any AI (CLI / MCP) via a native-messaging bridge.",
+  "license": "MIT",
   "type": "module",
   "bin": { "aichrome": "bin/aichrome.js" },
   "engines": { "node": ">=20" }
