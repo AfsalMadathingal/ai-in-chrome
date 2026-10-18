@@ -1,4 +1,6 @@
-# AI in Chrome
+<p align="center"><img src="assets/logo.png" alt="AI in Chrome logo" width="128" height="128" /></p>
+
+<h1 align="center">AI in Chrome</h1>
 
 **Claude in Chrome for any AI you already use.** Your terminal AI (Claude Code, Codex, or any MCP client) drives your **real, logged-in Chrome** from a side panel, the terminal, or MCP. No extension login, no API key, no blocked sites, MIT open source.
 

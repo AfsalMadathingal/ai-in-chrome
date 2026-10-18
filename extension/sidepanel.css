@@ -97,7 +97,7 @@ code, kbd { font-family: var(--mono); }
 /* ---------- header ---------- */
 .topbar { display: flex; align-items: center; gap: 2px; padding: 8px 8px 8px 12px; border-bottom: 1px solid var(--line); background: var(--bg); position: relative; z-index: 5; }
 .logo { width: 24px; height: 24px; display: grid; place-items: center; color: var(--accent); margin-right: 4px; }
-.logo svg { width: 20px; height: 20px; fill: currentColor; stroke: none; }
+.logo img { width: 22px; height: 22px; display: block; }
 .icon { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); transition: background .12s, color .12s; }
 .icon:hover { background: var(--hover); color: var(--text); }
 .icon.on { color: var(--accent); }
@@ -129,8 +129,8 @@ code, kbd { font-family: var(--mono); }
 main { flex: 1; overflow-y: auto; padding: 16px 14px 8px; display: flex; flex-direction: column; gap: 14px; scroll-behavior: auto; }
 
 .empty { margin: auto 0; display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 12px 4px; animation: fade .3s ease-out; }
-.empty .mark { color: var(--accent); width: 40px; height: 40px; margin-bottom: 6px; }
-.empty .mark svg { width: 40px; height: 40px; fill: currentColor; stroke: none; animation: breathe 4s ease-in-out infinite; }
+.empty .mark { margin-bottom: 10px; }
+.empty .mark img { width: 56px; height: 56px; display: block; margin: 0 auto; filter: drop-shadow(0 6px 16px rgb(201 100 66 / .25)); animation: breathe 4s ease-in-out infinite; }
 .empty h1 { font: 400 25px/1.25 var(--serif); margin: 0; letter-spacing: -.01em; }
 .empty p { margin: 0; color: var(--muted); font-size: 13px; }
 .pagecard { margin-top: 14px; display: flex; align-items: center; gap: 10px; width: 100%; max-width: 360px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); text-align: left; box-shadow: var(--shadow); }

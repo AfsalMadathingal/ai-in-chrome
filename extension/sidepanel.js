@@ -609,7 +609,7 @@ function renderEmpty() {
   log.textContent = '';
   const hour = new Date().getHours();
   const hello = hour < 5 ? 'Up late?' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
-  const e = el('div', 'empty', `<div class="mark">${icon('spark')}</div><h1>${hello}</h1><p>What should we do on this page?</p>
+  const e = el('div', 'empty', `<div class="mark"><img src="icons/icon-128.png" alt="" /></div><h1>${hello}</h1><p>What should we do on this page?</p>
     <div class="pagecard"><img alt="" /><div><div class="pt"></div><div class="ph"></div></div></div>
     <div class="suggest">${SUGGESTIONS.map(([i, t]) => `<button>${icon(i)}<span>${esc(t)}</span></button>`).join('')}</div>`);
   e.querySelectorAll('.suggest button').forEach((b) => b.addEventListener('click', () => send(b.textContent)));
