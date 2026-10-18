@@ -3,7 +3,7 @@ import readline from 'node:readline';
 import { TOOLS } from './tools.js';
 import { callTool } from './client.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.3.0';
 
 export function runMcp() {
   let queue = Promise.resolve();

@@ -77,7 +77,22 @@ Click the toolbar icon (or press Cmd/Ctrl+Shift+E) to open a chat panel next to 
 - **Codex**: runs your logged-in `codex` (untested).
 - **Terminal AI**: an AI already open in your terminal answers the panel. Tell it "listen to the AI in Chrome side panel" and it uses `sidepanel_wait` / `sidepanel_reply` (untested).
 
-Settings (gear icon): working folder and model. After installing or updating, run `aichrome install` once so the panel can find `claude` / `codex`.
+Pick the AI from the menu at the top. The panel shows its work as it goes:
+
+- **Thinking:** the AI's reasoning appears in a block you can expand, with how long it thought.
+- **Steps:** each browser action (navigate, click, type, read the page) is a line in a timeline, with its status and timing. Screenshots appear as thumbnails; click one to enlarge it. Expand a step to see its input and output.
+- **Plans:** when the AI makes a to-do list (Claude's TodoWrite or Codex's plan), it appears as a checklist that updates as the work goes.
+- **Answers:** Markdown with tables, quotes and code blocks; each code block and answer has a copy button.
+- **Permissions:** in "Ask before acting" mode, a card describes the action (for example "Click on ref_12 at example.com") with Allow once, Always allow and Deny.
+
+The composer:
+
+- **Images:** paste, drag in, or attach an image, or capture the current tab with the camera button. They are sent to Claude Code or Codex with your message.
+- **Slash commands:** type `/` for `/new`, `/history`, `/settings`, `/screenshot` and your own saved shortcuts (reusable prompts you add in Settings).
+- **Permission mode:** the pill next to Send switches between "Ask before acting" and "Act without asking".
+- **Stop:** press Esc or the Stop button.
+
+**History** (clock icon) lists past chats, grouped by day, with search and delete. **Settings** (gear icon): AI, permission mode, working folder, model, theme (system, light or dark), and saved shortcuts. After installing or updating, run `aichrome install` once so the panel can find `claude` / `codex`.
 
 ## Use it with AI
 

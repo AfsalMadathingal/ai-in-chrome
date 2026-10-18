@@ -33,6 +33,33 @@ function truncate(s, n = 600) {
   return s.length > n ? s.slice(0, n) + '…' : s;
 }
 
+// First image in a tool result, small enough for Chrome's 1 MB host->extension message limit.
+function toolResultImage(content) {
+  if (!Array.isArray(content)) return undefined;
+  for (const c of content) {
+    const data = c.type === 'image' && (c.source?.data || c.data);
+    const type = c.source?.media_type || c.mimeType || 'image/jpeg';
+    if (data && data.length < 700000) return `data:${type};base64,${data}`;
+  }
+  return undefined;
+}
+
+// Claude's TodoWrite and Codex's todo_list become one plan event the panel shows as a checklist.
+const todoItems = (list) => (list || []).map((t) => ({
+  text: t.content ?? t.text ?? '',
+  active: t.activeForm,
+  status: t.status || (t.completed ? 'completed' : 'pending'),
+}));
+
+function writeImages(images) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aichrome-'));
+  return images.map((img, i) => {
+    const file = path.join(dir, `image-${i + 1}.${(img.mediaType || 'image/png').split('/')[1] || 'png'}`);
+    fs.writeFileSync(file, Buffer.from(img.data, 'base64'));
+    return file;
+  });
+}
+
 function toolResultText(content) {
   if (typeof content === 'string') return content;
   if (Array.isArray(content)) return content.map((c) => (c.type === 'text' ? c.text : c.type === 'image' ? '[image]' : '')).join('\n');
@@ -85,8 +112,9 @@ export class Agents {
     if (!fs.existsSync(s.cwd)) throw new Error(`Working folder does not exist: ${s.cwd}`);
     s.busy = true;
     this.emit(s.sid, { t: 'busy', on: true });
-    if (s.kind === 'claude') this.sendClaude(s, msg.text);
-    else if (s.kind === 'codex') this.sendCodex(s, msg.text);
+    const images = Array.isArray(msg.images) ? msg.images.filter((i) => i?.data) : [];
+    if (s.kind === 'claude') this.sendClaude(s, msg.text, images);
+    else if (s.kind === 'codex') this.sendCodex(s, msg.text, images);
     else throw new Error(`Unknown agent "${s.kind}"`);
   }
 
@@ -119,9 +147,12 @@ export class Agents {
   }
 
   // ---------- Claude Code: one long-lived process per chat, stream-json in and out ----------
-  sendClaude(s, text) {
+  sendClaude(s, text, images = []) {
     if (!s.proc) this.startClaude(s);
-    s.proc.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: text } }) + '\n');
+    const content = images.length
+      ? [...images.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.mediaType || 'image/png', data: i.data } })), { type: 'text', text }]
+      : text;
+    s.proc.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content } }) + '\n');
   }
 
   startClaude(s) {
@@ -168,20 +199,24 @@ export class Agents {
     if (m.type === 'stream_event') {
       const ev = m.event;
       if (ev.type === 'content_block_delta' && ev.delta?.type === 'text_delta') this.emit(s.sid, { t: 'delta', text: ev.delta.text });
-      else if (ev.type === 'content_block_start' && ev.content_block?.type === 'thinking') this.emit(s.sid, { t: 'thinking' });
+      else if (ev.type === 'content_block_delta' && ev.delta?.type === 'thinking_delta') this.emit(s.sid, { t: 'thinking', text: ev.delta.thinking });
+      else if (ev.type === 'content_block_start' && ev.content_block?.type === 'thinking') this.emit(s.sid, { t: 'thinking', text: '' });
       return;
     }
     if (m.type === 'assistant') {
       if (m.parent_tool_use_id) return; // subagent internals
       for (const c of m.message?.content || []) {
         if (c.type === 'text' && c.text) this.emit(s.sid, { t: 'text', text: c.text });
-        if (c.type === 'tool_use') this.emit(s.sid, { t: 'tool', id: c.id, name: c.name, input: truncate(c.input, 400) });
+        if (c.type === 'tool_use' && c.name === 'TodoWrite') this.emit(s.sid, { t: 'todo', items: todoItems(c.input?.todos) });
+        else if (c.type === 'tool_use') this.emit(s.sid, { t: 'tool', id: c.id, name: c.name, input: truncate(c.input, 3000) });
       }
       return;
     }
     if (m.type === 'user') {
       for (const c of Array.isArray(m.message?.content) ? m.message.content : []) {
-        if (c.type === 'tool_result') this.emit(s.sid, { t: 'tool_result', id: c.tool_use_id, ok: !c.is_error, text: truncate(toolResultText(c.content), 600) });
+        if (c.type === 'tool_result') {
+          this.emit(s.sid, { t: 'tool_result', id: c.tool_use_id, ok: !c.is_error, text: truncate(toolResultText(c.content), 2000), image: toolResultImage(c.content) });
+        }
       }
       return;
     }
@@ -190,13 +225,14 @@ export class Agents {
       const interrupted = m.subtype === 'error_during_execution' || /interrupt/i.test(m.result || '');
       return this.finish(s, interrupted ? { t: 'stopped' } : {
         t: 'done', ms: m.duration_ms, cost: m.total_cost_usd, turns: m.num_turns,
+        tokens: m.usage ? (m.usage.input_tokens || 0) + (m.usage.cache_read_input_tokens || 0) + (m.usage.cache_creation_input_tokens || 0) + (m.usage.output_tokens || 0) : undefined,
         error: m.is_error ? m.result || m.subtype : undefined,
       });
     }
   }
 
   // ---------- Codex: `codex exec --json` per message, resumed by thread id ----------
-  sendCodex(s, text) {
+  sendCodex(s, text, images = []) {
     const bin = which('codex');
     if (!bin) throw new Error('Codex (`codex`) not found on PATH.');
     const mcp = [
@@ -206,6 +242,7 @@ export class Agents {
     const args = ['exec', ...(s.sessionId ? ['resume', s.sessionId] : []), '--json', '--skip-git-repo-check', ...mcp];
     if (s.model) args.push('-m', s.model);
     if (s.mode === 'auto') args.push('--full-auto');
+    for (const file of images.length ? writeImages(images) : []) args.push('-i', file);
     args.push(`${SYSTEM_PROMPT}\n\n${text}`);
     this.log('agent codex run', s.sid, s.cwd, s.sessionId || 'new');
     const proc = spawn(bin, args, { cwd: s.cwd, env: { ...process.env, AICHROME_SESSION: s.sid }, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -228,14 +265,16 @@ export class Agents {
         if (m.type === 'thread.started') {
           s.sessionId = m.thread_id;
           this.emit(s.sid, { t: 'session', id: m.thread_id, agent: 'codex' });
-        } else if (m.type === 'item.started' || m.type === 'item.completed') {
+        } else if (m.type === 'item.started' || m.type === 'item.updated' || m.type === 'item.completed') {
           const it = m.item || {};
-          if (it.type === 'agent_message' && m.type === 'item.completed') this.emit(s.sid, { t: 'text', text: it.text });
+          if (it.type === 'todo_list') this.emit(s.sid, { t: 'todo', items: todoItems(it.items) });
+          else if (m.type === 'item.updated') continue;
+          else if (it.type === 'agent_message' && m.type === 'item.completed') this.emit(s.sid, { t: 'text', text: it.text });
           else if (it.type === 'reasoning' && m.type === 'item.started') this.emit(s.sid, { t: 'thinking' });
           else if (it.type === 'mcp_tool_call' || it.type === 'command_execution' || it.type === 'web_search' || it.type === 'file_change') {
             const name = it.type === 'mcp_tool_call' ? `${it.server}__${it.tool}` : it.type === 'command_execution' ? 'shell' : it.type;
-            if (m.type === 'item.started') this.emit(s.sid, { t: 'tool', id: it.id, name, input: truncate(it.arguments ?? it.command ?? it.query ?? it.changes ?? '', 400) });
-            else this.emit(s.sid, { t: 'tool_result', id: it.id, ok: it.status !== 'failed' && !it.error, text: truncate(it.result?.content ? toolResultText(it.result.content) : it.aggregated_output ?? it.error?.message ?? '', 600) });
+            if (m.type === 'item.started') this.emit(s.sid, { t: 'tool', id: it.id, name, input: truncate(it.arguments ?? it.command ?? it.query ?? it.changes ?? '', 3000) });
+            else this.emit(s.sid, { t: 'tool_result', id: it.id, ok: it.status !== 'failed' && !it.error, text: truncate(it.result?.content ? toolResultText(it.result.content) : it.aggregated_output ?? it.error?.message ?? '', 2000), image: toolResultImage(it.result?.content) });
           }
         } else if (m.type === 'turn.completed') {
           done = true;

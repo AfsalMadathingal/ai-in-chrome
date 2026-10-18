@@ -33,9 +33,45 @@ async function chat(sid) {
   return c;
 }
 
+const KEEP_IMAGES = 8; // screenshots kept in a saved chat (newest first)
+
 function persist(sid) {
   const c = chats.get(sid);
-  if (c) chrome.storage.local.set({ [`chat:${sid}`]: { events: c.events.slice(-EVENT_LIMIT), sessionId: c.sessionId, kind: c.kind } });
+  if (!c) return;
+  let images = 0;
+  const events = c.events.slice(-EVENT_LIMIT).reverse().map((ev) => {
+    if (!ev.image) return ev;
+    return ++images <= KEEP_IMAGES ? ev : { ...ev, image: undefined };
+  }).reverse();
+  chrome.storage.local.set({ [`chat:${sid}`]: { events, sessionId: c.sessionId, kind: c.kind } });
+}
+
+// ---------- chat list (history drawer) ----------
+
+async function chatIndex() {
+  return (await chrome.storage.local.get('chatIndex')).chatIndex || {};
+}
+
+async function touchChat(sid, fields) {
+  const index = await chatIndex();
+  index[sid] = { ...index[sid], ...fields, updated: Date.now() };
+  await chrome.storage.local.set({ chatIndex: index });
+}
+
+async function listChats() {
+  const index = await chatIndex();
+  return Object.entries(index).map(([sid, v]) => ({ sid, ...v })).sort((a, b) => b.updated - a.updated);
+}
+
+async function deleteChat(sid) {
+  stop(sid);
+  deps.hostSend({ type: 'agent_reset', sid });
+  chats.delete(sid);
+  allowed.delete(sid);
+  const index = await chatIndex();
+  delete index[sid];
+  await chrome.storage.local.set({ chatIndex: index });
+  await chrome.storage.local.remove(`chat:${sid}`);
 }
 
 function broadcast(sid, msg) {
@@ -55,16 +91,22 @@ export async function emit(sid, ev) {
   const c = await chat(sid);
   ev.ts ??= Date.now();
   const last = c.events[c.events.length - 1];
+  if (last?.t === 'thinking' && ev.t !== 'thinking' && ev.t !== 'busy' && !last.end) last.end = ev.ts;
   if (ev.t === 'delta') {
     if (last?.t === 'delta') last.text += ev.text;
     else c.events.push({ ...ev });
+  } else if (ev.t === 'thinking') {
+    if (last?.t === 'thinking') {
+      last.text = (last.text || '') + (ev.text || '');
+      last.end = ev.ts;
+    } else c.events.push({ ...ev, text: ev.text || '' });
   } else if (ev.t === 'text' && last?.t === 'delta') c.events[c.events.length - 1] = ev;
-  else if (ev.t !== 'busy' && ev.t !== 'available' && ev.t !== 'thinking') c.events.push(ev);
+  else if (ev.t !== 'busy' && ev.t !== 'available') c.events.push(ev);
   if (ev.t === 'session') c.sessionId = ev.id;
   if (ev.t === 'busy') c.busy = ev.on;
   if (c.events.length > EVENT_LIMIT) c.events.splice(0, c.events.length - EVENT_LIMIT);
   broadcast(sid, { type: 'event', ev });
-  if (ev.t === 'busy' && !ev.on) persist(sid);
+  if ((ev.t === 'busy' && !ev.on) || ev.t === 'user') persist(sid);
 }
 
 // Events from the native host (headless Claude Code / Codex).
@@ -93,11 +135,10 @@ chrome.runtime.onConnect.addListener((port) => {
         if (!deps.hostSend({ type: 'agent_list', sid: msg.sid })) port.postMessage({ type: 'event', ev: { t: 'available', host: false } });
       } else if (msg.type === 'send') await send(msg);
       else if (msg.type === 'stop') stop(msg.sid);
-      else if (msg.type === 'reset') {
-        deps.hostSend({ type: 'agent_reset', sid: msg.sid });
-        chats.delete(msg.sid);
-        allowed.delete(msg.sid);
-        chrome.storage.local.remove(`chat:${msg.sid}`);
+      else if (msg.type === 'list_chats') port.postMessage({ type: 'chats', chats: await listChats() });
+      else if (msg.type === 'delete_chat' || msg.type === 'reset') {
+        await deleteChat(msg.sid);
+        port.postMessage({ type: 'chats', chats: await listChats() });
       } else if (msg.type === 'approve') approvals.get(msg.id)?.(msg.decision);
     } catch (e) {
       port.postMessage({ type: 'event', ev: { t: 'error', message: String(e.message || e) } });
@@ -110,23 +151,26 @@ async function tabLine(tabId) {
   return tab ? `[Tab ${tab.id}: ${tab.title || ''} — ${tab.url || ''}]` : '[No tab]';
 }
 
-async function send({ sid, kind, text, tabId, cwd, mode, model }) {
+async function send({ sid, kind, text, tabId, cwd, mode, model, images = [], thumbs = [] }) {
   const c = await chat(sid);
   if (c.busy) throw new Error('Still working. Press Stop first.');
   c.kind = kind;
   if (tabId != null) deps.setCurrentTab(tabId);
   const line = await tabLine(tabId);
-  await emit(sid, { t: 'user', text, tab: line });
+  await emit(sid, { t: 'user', text, tab: line, thumbs: thumbs.length ? thumbs : undefined });
+  const index = await chatIndex();
+  await touchChat(sid, { title: index[sid]?.title || text.replace(/\s+/g, ' ').slice(0, 80) || 'Image', kind });
   const full = `${line}\n${text}`;
 
   if (kind === 'terminal') {
     await emit(sid, { t: 'busy', on: true });
+    if (images.length) await emit(sid, { t: 'notice', text: 'Images are not passed to a terminal AI; only the text was sent.' });
     inbox.push({ sid, text: full });
     flushInbox();
     if (!terminalListening()) await emit(sid, { t: 'notice', text: 'Queued. No terminal AI is listening right now: in your terminal AI, say "listen to the AI in Chrome side panel".' });
     return;
   }
-  if (!deps.hostSend({ type: 'agent_send', sid, kind, text: full, cwd, mode, model, sessionId: c.sessionId })) {
+  if (!deps.hostSend({ type: 'agent_send', sid, kind, text: full, cwd, mode, model, images, sessionId: c.sessionId })) {
     throw new Error('Native host not connected. Run `aichrome install`, then click the extension icon.');
   }
 }
