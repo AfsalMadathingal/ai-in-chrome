@@ -6,7 +6,7 @@ let seq = 0;
 
 const ports = new Map(); // sid -> Set<Port>
 const chats = new Map(); // sid -> { events: [], busy, sessionId, kind }
-const approvals = new Map(); // id -> resolve(decision)
+const approvals = new Map(); // id -> { resolve(decision), browser }
 const allowed = new Map(); // sid -> Set<key> ("Always allow" for this chat)
 const inbox = []; // messages waiting for the terminal AI
 const waiters = []; // pending sidepanel_wait calls
@@ -140,7 +140,8 @@ chrome.runtime.onConnect.addListener((port) => {
       else if (msg.type === 'delete_chat' || msg.type === 'reset') {
         await deleteChat(msg.sid);
         port.postMessage({ type: 'chats', chats: await listChats() });
-      } else if (msg.type === 'approve') approvals.get(msg.id)?.(msg.decision);
+      } else if (msg.type === 'approve') approvals.get(msg.id)?.resolve(msg.decision);
+      else if (msg.type === 'set_mode') setMode(msg.mode);
     } catch (e) {
       port.postMessage({ type: 'event', ev: { t: 'error', message: String(e.message || e) } });
     }
@@ -194,7 +195,7 @@ function stop(sid) {
     return;
   }
   deps.hostSend({ type: 'agent_stop', sid });
-  for (const [id, resolve] of approvals) if (id.startsWith(`${sid}:`)) resolve('deny');
+  for (const [id, a] of approvals) if (id.startsWith(`${sid}:`)) a.resolve('deny');
 }
 
 // ---------- permissions (Claude Code --permission-prompt-tool) ----------
@@ -215,13 +216,26 @@ function permissionKey(tool, input) {
   return short;
 }
 
+// The mode the panel shows now. The `mode` an AI process was started with goes stale when the user switches
+// mid-chat (Claude Code keeps running with the old AICHROME_MODE), so the panel setting wins.
+async function currentMode(fallback) {
+  const { panelSettings } = await chrome.storage.local.get('panelSettings');
+  return panelSettings?.mode || fallback || 'ask';
+}
+
+// Switching to "Act without asking" also answers the browser permission cards already waiting.
+function setMode(mode) {
+  if (mode !== 'auto') return;
+  for (const a of approvals.values()) if (a.browser) a.resolve('allow');
+}
+
 export async function approve_action({ sid, mode, tool_name: tool = '', input = {} }) {
   const allow = JSON.stringify({ behavior: 'allow', updatedInput: input });
   const deny = (message) => JSON.stringify({ behavior: 'deny', message });
   const browser = tool.startsWith('mcp__ai-in-chrome__');
   const short = tool.replace(/^mcp__ai-in-chrome__/, '');
   if (short === 'approve_action') return deny('Not allowed.');
-  if (browser && mode === 'auto') return allow;
+  if (browser && (await currentMode(mode)) === 'auto') return allow;
   if (browser && (READ_ONLY.has(short) || (short === 'computer' && READ_ONLY_COMPUTER.has(input.action)))) return allow;
   const key = browser ? permissionKey(tool, input) : tool;
   if (allowed.get(sid)?.has(key)) return allow;
@@ -230,7 +244,7 @@ export async function approve_action({ sid, mode, tool_name: tool = '', input = 
   const id = `${sid}:${++seq}`;
   await emit(sid, { t: 'permission', id, tool: browser ? short : tool, key, input: JSON.stringify(input).slice(0, 1500) });
   const decision = await new Promise((resolve) => {
-    approvals.set(id, resolve);
+    approvals.set(id, { resolve, browser });
     setTimeout(() => resolve('timeout'), 5 * 60 * 1000);
   });
   approvals.delete(id);

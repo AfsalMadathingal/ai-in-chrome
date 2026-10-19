@@ -753,6 +753,7 @@ function setSetting(key, value) {
   settings[key] = value;
   chrome.storage.local.set({ panelSettings: settings });
   if (key === 'theme') applyTheme();
+  if (key === 'mode') port?.postMessage({ type: 'set_mode', mode: value });
   if ((key === 'agent' && value === 'ollama') || key === 'ollamaUrl') port?.postMessage({ type: 'refresh_agents', sid });
   renderAgentUI();
 }
