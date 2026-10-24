@@ -1,7 +1,7 @@
 // Side panel backend: chat transcripts, routing to the AI (a headless Claude Code / Codex run by the native host,
 // or an AI already open in the user's terminal that listens with sidepanel_wait), and permission prompts.
 
-let deps; // { hostSend(msg) -> boolean, setCurrentTab(id) }
+let deps; // { hostSend(msg) -> boolean, setCurrentTab(id), runTool(name, args), refAt(ref, ts), locate(target), settle() }
 let seq = 0;
 
 const ports = new Map(); // sid -> Set<Port>
@@ -104,6 +104,7 @@ export async function emit(sid, ev) {
   else if (ev.t !== 'busy' && ev.t !== 'available') c.events.push(ev);
   if (ev.t === 'session') c.sessionId = ev.id;
   if (ev.t === 'busy') c.busy = ev.on;
+  if (ev.t === 'busy' && !ev.on && c.queue?.length) setTimeout(() => flushQueue(sid), 0);
   if (c.events.length > EVENT_LIMIT) c.events.splice(0, c.events.length - EVENT_LIMIT);
   broadcast(sid, { type: 'event', ev });
   if ((ev.t === 'busy' && !ev.on) || ev.t === 'user') persist(sid);
@@ -111,6 +112,7 @@ export async function emit(sid, ev) {
 
 // Events from the native host (headless Claude Code / Codex).
 export function onAgentEvent(sid, ev) {
+  if (ev.t === 'voice_fixed') return broadcast(sid, { type: 'voice_fixed', id: ev.id, text: ev.text }); // not part of the chat
   emit(sid, ev);
 }
 
@@ -132,9 +134,17 @@ chrome.runtime.onConnect.addListener((port) => {
         subscribe(msg.sid);
         const c = await chat(msg.sid);
         port.postMessage({ type: 'history', events: c.events, busy: c.busy, terminal: terminalStatus() });
+        port.postMessage(queueMsg(msg.sid, c));
         await listAgents(msg.sid, port);
       } else if (msg.type === 'send') await send(msg);
-      else if (msg.type === 'stop') stop(msg.sid);
+      else if (msg.type === 'stop') stop(msg.sid, { restore: true });
+      else if (msg.type === 'send_now') stop(msg.sid);
+      else if (msg.type === 'voice_fix' && !deps.hostSend({ ...msg, type: 'agent_voice_fix' })) port.postMessage({ type: 'voice_fixed', id: msg.id, text: null });
+      else if (msg.type === 'unqueue') {
+        const c = await chat(msg.sid);
+        c.queue = (c.queue || []).filter((q) => q.id !== msg.id);
+        broadcast(msg.sid, queueMsg(msg.sid, c));
+      }
       else if (msg.type === 'refresh_agents') await listAgents(msg.sid, port);
       else if (msg.type === 'list_chats') port.postMessage({ type: 'chats', chats: await listChats() });
       else if (msg.type === 'delete_chat' || msg.type === 'reset') {
@@ -142,6 +152,8 @@ chrome.runtime.onConnect.addListener((port) => {
         port.postMessage({ type: 'chats', chats: await listChats() });
       } else if (msg.type === 'approve') approvals.get(msg.id)?.resolve(msg.decision);
       else if (msg.type === 'set_mode') setMode(msg.mode);
+      else if (msg.type === 'save_workflow') port.postMessage({ type: 'workflow_saved', ...(await saveWorkflow(msg)) });
+      else if (msg.type === 'run_workflow') await runWorkflow(msg);
     } catch (e) {
       port.postMessage({ type: 'event', ev: { t: 'error', message: String(e.message || e) } });
     }
@@ -161,9 +173,36 @@ async function tabLine(tabId) {
   return tab ? `[Tab ${tab.id}: ${tab.title || ''} — ${tab.url || ''}]` : '[No tab]';
 }
 
-async function send({ sid, kind, text, tabId, cwd, mode, model, ollamaUrl, images = [], thumbs = [] }) {
+// ---------- follow-ups typed while the AI works: queued, then sent together when it finishes ----------
+
+const queueMsg = (sid, c) => ({ type: 'queue', sid, items: (c.queue || []).map(({ id, text, thumbs }) => ({ id, text, images: thumbs?.length || 0 })) });
+
+async function flushQueue(sid) {
   const c = await chat(sid);
-  if (c.busy) throw new Error('Still working. Press Stop first.');
+  if (c.busy || !c.queue?.length) return;
+  const items = c.queue.splice(0);
+  broadcast(sid, queueMsg(sid, c));
+  const last = items[items.length - 1];
+  try {
+    await send({
+      ...last,
+      text: items.map((q) => q.text).join('\n\n'),
+      images: items.flatMap((q) => q.images || []),
+      thumbs: items.flatMap((q) => q.thumbs || []),
+    });
+  } catch (e) {
+    await emit(sid, { t: 'error', message: String(e.message || e) });
+  }
+}
+
+async function send(msg) {
+  const { sid, kind, text, tabId, cwd, mode, model, ollamaUrl, images = [], thumbs = [] } = msg;
+  const c = await chat(sid);
+  if (c.busy) {
+    (c.queue ||= []).push({ ...msg, id: `q${++seq}` });
+    broadcast(sid, queueMsg(sid, c));
+    return;
+  }
   c.kind = kind;
   if (tabId != null) deps.setCurrentTab(tabId);
   const line = await tabLine(tabId);
@@ -185,8 +224,19 @@ async function send({ sid, kind, text, tabId, cwd, mode, model, ollamaUrl, image
   }
 }
 
-function stop(sid) {
+// restore: a plain Stop also cancels queued follow-ups and gives their text back to the composer.
+// Without it ("Send now"), the queue goes out as soon as the AI has stopped.
+function stop(sid, { restore = false } = {}) {
   const c = chats.get(sid);
+  if (restore && c?.queue?.length) {
+    const text = c.queue.map((q) => q.text).join('\n\n');
+    c.queue = [];
+    broadcast(sid, { ...queueMsg(sid, c), restore: text });
+  }
+  if (c?.replay) {
+    c.replay.stopped = true;
+    return;
+  }
   if (c?.kind === 'terminal') {
     for (let i = inbox.length - 1; i >= 0; i--) if (inbox[i].sid === sid) inbox.splice(i, 1);
     if (terminalSid === sid) terminalSid = null;
@@ -315,4 +365,137 @@ export function onToolCall(name, args) {
   const { tabId, ...rest } = args || {};
   emit(sid, { t: 'tool', id, name, input: JSON.stringify(rest).slice(0, 400) });
   return (ok, text) => emit(sid, { t: 'tool_result', id, ok, text: String(text || '').slice(0, 300) });
+}
+
+// ---------- workflows: replay what the AI did, step by step, without the AI ----------
+
+// Browser actions worth replaying. Reading and looking (read_page, find, screenshots…) only helped the AI decide.
+const REPLAYABLE = new Set(['navigate', 'tabs_create', 'computer', 'form_input', 'file_upload']);
+const SKIP_COMPUTER = new Set(['screenshot', 'zoom', 'mouse_move']);
+const short = (name) => String(name || '').replace(/^mcp__ai-in-chrome__/, '').replace(/^ai-in-chrome__/, '');
+const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function getWorkflows() {
+  return (await chrome.storage.local.get('workflows')).workflows || [];
+}
+
+// The browser actions that worked in a chat, from `since` on (one reply, or the whole chat).
+function workflowSteps(events, since = 0) {
+  const pending = new Map();
+  const steps = [];
+  const seen = new Map(); // ref -> target, from read_page / find output (backup if the worker restarted since)
+  let startUrl = '';
+  for (const ev of events) {
+    if ((ev.ts || 0) < since) continue;
+    if (ev.t === 'user' && !startUrl) startUrl = /— (\S+)\]$/.exec(ev.tab || '')?.[1] || '';
+    if (ev.t === 'tool') {
+      const tool = short(ev.name);
+      let input;
+      try {
+        input = typeof ev.input === 'string' ? JSON.parse(ev.input) : { ...ev.input };
+      } catch {
+        continue;
+      }
+      if (!REPLAYABLE.has(tool) || !input || (tool === 'computer' && SKIP_COMPUTER.has(input.action))) continue;
+      delete input.tabId;
+      if (input.target) {
+        // already a replayed step
+      } else if (input.ref) {
+        const target = deps.refAt(input.ref, ev.ts) || seen.get(input.ref);
+        if (target) input.target = target;
+        else input.lost = true; // replay hands this step to the AI
+      }
+      delete input.ref;
+      pending.set(ev.id, { tool, input });
+    } else if (ev.t === 'tool_result' && ev.ok && !pending.has(ev.id)) {
+      for (const m of String(ev.text || '').matchAll(/^\s*([\w-]+) "([^"]*)" \[(ref_\d+)\]/gm)) seen.set(m[3], { role: m[1], name: m[2] });
+    } else if (ev.t === 'tool_result' && ev.ok && pending.has(ev.id)) {
+      steps.push(pending.get(ev.id));
+      pending.delete(ev.id);
+    }
+  }
+  // Start where the task started, unless the first step goes somewhere itself.
+  if (steps.length && startUrl && /^https?:/.test(startUrl) && !['navigate', 'tabs_create'].includes(steps[0].tool)) {
+    steps.unshift({ tool: 'navigate', input: { url: startUrl } });
+  }
+  return steps;
+}
+
+async function saveWorkflow({ sid, name, since }) {
+  name = String(name || '').trim().replace(/^\//, '').replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+  if (!name) return { error: 'Give the workflow a name' };
+  const c = await chat(sid);
+  const steps = workflowSteps(c.events, since || 0);
+  if (!steps.length) return { error: 'No browser actions to save there' };
+  const title = (await chatIndex())[sid]?.title || '';
+  const workflows = (await getWorkflows()).filter((w) => w.name !== name);
+  workflows.push({ name, title, steps, created: Date.now() });
+  await chrome.storage.local.set({ workflows });
+  return { name, count: steps.length };
+}
+
+// What a step does, for the hand-off to the AI when a replay gets stuck.
+function stepText(step) {
+  const { tool, input } = step;
+  const what = input.target ? `the ${input.target.role} "${input.target.name}"` : input.coordinate ? `at (${input.coordinate})` : input.lost ? 'an element (not recorded; find the right one)' : '';
+  if (tool === 'navigate' || tool === 'tabs_create') return `Open ${input.url}`;
+  if (tool === 'form_input') return `Set ${what} to "${input.value}"`;
+  if (tool === 'file_upload') return `Upload a file to ${what}`;
+  if (input.action === 'type') return `Type "${input.text}"${what ? ` into ${what}` : ''}`;
+  if (input.action === 'key') return `Press ${input.text}`;
+  if (input.action === 'wait') return `Wait ${input.duration || 1}s`;
+  if (input.action === 'scroll') return `Scroll ${input.scroll_direction || 'down'}${what ? ` in ${what}` : ''}`;
+  return `${input.action?.replace(/_/g, ' ') || tool} ${what}`.trim();
+}
+
+async function runWorkflow({ sid, name, tabId }) {
+  const wf = (await getWorkflows()).find((w) => w.name === name);
+  if (!wf) throw new Error(`No workflow named /${name}`);
+  const c = await chat(sid);
+  if (c.busy) throw new Error('Still working. Press Stop first.');
+  if (tabId != null) deps.setCurrentTab(tabId);
+  await emit(sid, { t: 'user', text: `/${name}`, tab: await tabLine(tabId), workflow: name });
+  const index = await chatIndex();
+  await touchChat(sid, { title: index[sid]?.title || `/${name}`, kind: c.kind });
+  await emit(sid, { t: 'busy', on: true });
+  const replay = (c.replay = { stopped: false });
+  const started = Date.now();
+  try {
+    for (const [i, step] of wf.steps.entries()) {
+      if (replay.stopped) return await emit(sid, { t: 'stopped' });
+      const id = `w${++seq}`;
+      await emit(sid, { t: 'tool', id, name: `mcp__ai-in-chrome__${step.tool}`, input: JSON.stringify(step.input) });
+      try {
+        const { target, lost, ...args } = step.input;
+        if (lost) throw new Error('This step’s element wasn’t recorded, so it can’t be replayed on its own');
+        if (target) {
+          // The page may still be rendering: look for the element for a few seconds.
+          for (let tries = 0; !args.ref && tries < 16 && !replay.stopped; tries++) {
+            args.ref = await deps.locate(target).catch(() => null);
+            if (!args.ref) await pause(400);
+          }
+          if (!args.ref) throw new Error(`Couldn't find the ${target.role}${target.name ? ` "${target.name}"` : ''} on the page`);
+        }
+        const result = await deps.runTool(step.tool, args);
+        await emit(sid, { t: 'tool_result', id, ok: true, text: String(typeof result === 'string' ? result : result?.text || 'Done').slice(0, 300) });
+        await deps.settle();
+        await pause(step.tool === 'computer' && step.input.action === 'type' ? 150 : 400);
+      } catch (e) {
+        const error = String(e?.message || e);
+        await emit(sid, { t: 'tool_result', id, ok: false, text: error });
+        const rest = wf.steps.slice(i).map((s, n) => `${n + 1}. ${stepText(s)}`).join('\n');
+        await emit(sid, {
+          t: 'workflow_failed', name, done: i, total: wf.steps.length, error,
+          prompt: `I was replaying my saved workflow "/${name}"${wf.title ? ` (originally: ${wf.title})` : ''}. ` +
+            `${i ? `The first ${i} step${i === 1 ? '' : 's'} worked, then this` : 'The first'} step failed: ${error}\n\n` +
+            `Finish the task from where it stopped. The remaining steps were:\n${rest}`,
+        });
+        return;
+      }
+    }
+    await emit(sid, { t: 'done', ms: Date.now() - started, replay: true, steps: wf.steps.length });
+  } finally {
+    c.replay = null;
+    await emit(sid, { t: 'busy', on: false });
+  }
 }

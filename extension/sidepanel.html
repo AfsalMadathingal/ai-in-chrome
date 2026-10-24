@@ -33,6 +33,7 @@
   <footer>
     <div id="status" class="status"></div>
     <div id="slash" class="menu slash" role="listbox" hidden></div>
+    <div id="queue" class="queue" hidden></div>
     <div id="composer" class="composer">
       <div id="attachments" class="attachments" hidden></div>
       <textarea id="input" rows="1" placeholder="Ask anything about this tab…  ( / for commands)"></textarea>
@@ -42,6 +43,9 @@
         </button>
         <button id="shotBtn" class="tb" title="Attach a screenshot of this tab" aria-label="Screenshot tab">
           <svg viewBox="0 0 24 24"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z"/><circle cx="12" cy="13" r="3.5"/></svg>
+        </button>
+        <button id="micBtn" class="tb mic" title="Speak your message" aria-label="Voice input">
+          <svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
         </button>
         <div id="tabChip" class="tabchip" title="The tab the AI works on"><img id="tabIcon" alt="" /><span id="tabTitle">No tab</span></div>
         <span class="spacer"></span>
@@ -96,12 +100,25 @@
         <label class="field" id="cwdField">Working folder <input id="cwd" placeholder="~" spellcheck="false" /></label>
       </section>
       <section>
+        <h3>Voice</h3>
+        <div class="seg" id="voiceFixSeg">
+          <button data-v="true">Fix what I said with AI</button>
+          <button data-v="false">Send exactly what was heard</button>
+        </div>
+        <p class="hint">After you speak, a separate small model fixes misheard words (names, terms on the page) before sending. It uses Chrome's built-in AI when available, otherwise Ollama or Claude Haiku.</p>
+      </section>
+      <section>
         <h3>Appearance</h3>
         <div class="seg" id="themeSeg">
           <button data-v="system">System</button>
           <button data-v="light">Light</button>
           <button data-v="dark">Dark</button>
         </div>
+      </section>
+      <section>
+        <h3>Workflows</h3>
+        <p class="hint">Steps the AI took, saved to replay with <code>/name</code>. Replays run in the browser directly: no AI, no tokens.</p>
+        <div id="workflowList" class="shortcuts"></div>
       </section>
       <section>
         <h3>Shortcuts</h3>

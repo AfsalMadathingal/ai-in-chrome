@@ -17,7 +17,9 @@ let terminal = { listening: false, recent: false };
 let lastModel = '';
 let attachments = []; // { mediaType, data, thumb }
 let chatList = [];
-let settings = { agent: 'claude', mode: 'ask', cwd: '~', model: '', ollamaModel: '', ollamaUrl: '', theme: 'system', shortcuts: [] };
+let workflows = []; // saved replays: { name, title, steps, created }
+let lastUserTs = 0;
+let settings = { agent: 'claude', mode: 'ask', cwd: '~', model: '', ollamaModel: '', ollamaUrl: '', theme: 'system', voiceFix: true, shortcuts: [] };
 
 // Per-render state for the assistant turn being built.
 let turn = null;
@@ -66,6 +68,9 @@ const P = {
   settings: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   trash: '<path d="M3 6h18M8 6V4h8v2M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
+  bookmark: '<path d="M19 21l-7-4-7 4V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/>',
+  play: '<path d="M6 4v16l14-8z"/>',
+  mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/>',
 };
 const icon = (name) => `<svg viewBox="0 0 24 24">${P[name] || P.bolt}</svg>`;
 
@@ -80,11 +85,14 @@ function el(tag, cls, html) {
   return e;
 }
 
+const calm = matchMedia('(prefers-reduced-motion: reduce)');
+const fold = (inner) => `<div class="fold"><div>${inner}</div></div>`;
 const nearBottom = () => log.scrollHeight - log.scrollTop - log.clientHeight < 120;
 const scrollDown = () => (log.scrollTop = log.scrollHeight);
 
 function add(node, parent = log) {
-  log.querySelector('.empty')?.remove();
+  log.querySelector(':scope > .empty')?.remove();
+  if (!node.classList.contains('pending')) log.querySelector(':scope > .pending')?.remove();
   const stick = replaying || nearBottom();
   parent.appendChild(node);
   if (stick) scrollDown();
@@ -114,12 +122,12 @@ const clip = (s, n = 60) => {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 };
 
-function toast(text) {
+function toast(text, ms = 1400) {
   const t = $('toast');
   t.textContent = text;
   t.hidden = false;
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => (t.hidden = true), 1400);
+  toast.timer = setTimeout(() => (t.hidden = true), ms);
 }
 
 async function copy(text) {
@@ -244,80 +252,121 @@ function parseInput(s) {
   }
 }
 
-const COMPUTER = {
-  left_click: ['Click', 'Clicking', 'cursor'], click: ['Click', 'Clicking', 'cursor'],
-  right_click: ['Right-click', 'Clicking', 'cursor'], double_click: ['Double-click', 'Clicking', 'cursor'],
-  triple_click: ['Triple-click', 'Clicking', 'cursor'], left_click_drag: ['Drag', 'Dragging', 'cursor'],
-  hover: ['Hover', 'Hovering', 'cursor'], mouse_move: ['Move mouse', 'Moving', 'cursor'],
-  type: ['Type', 'Typing', 'keyboard'], key: ['Press', 'Pressing keys', 'keyboard'],
-  screenshot: ['Take screenshot', 'Looking at the page', 'camera'], zoom: ['Zoom into region', 'Looking closer', 'camera'],
-  scroll: ['Scroll', 'Scrolling', 'scroll'], scroll_to: ['Scroll to', 'Scrolling', 'scroll'], wait: ['Wait', 'Waiting', 'clock'],
+const q = (s, n) => `“${esc(clip(s, n || 40))}”`;
+const c = (s, n) => `<code>${esc(clip(s, n || 48))}</code>`;
+const file = (p) => c(String(p || '').split('/').pop());
+
+// Element names learned from read_page / find results, so a step says Click “Sign in” button, not Click ref_12.
+const refNames = new Map();
+function learnRefs(text) {
+  for (const m of String(text || '').matchAll(/^\s*([\w-]+)(?: "([^"]*)")? \[(ref_\d+)\]/gm)) refNames.set(m[3], { role: m[1], name: m[2] || '' });
+}
+const ROLE_WORDS = {
+  link: 'link', button: 'button', textbox: 'field', searchbox: 'search box', checkbox: 'checkbox', radio: 'option', combobox: 'dropdown',
+  listbox: 'list', option: 'option', img: 'image', heading: 'heading', tab: 'tab', menuitem: 'menu item', slider: 'slider', spinbutton: 'field', switch: 'switch',
+};
+function element(o, fallback = 'an element') {
+  const r = o.target || (o.ref && refNames.get(o.ref));
+  if (r) {
+    const kind = ROLE_WORDS[r.role] || '';
+    return r.name.trim() ? `${q(r.name, 32)}${kind ? ` ${kind}` : ''}` : `a ${esc(kind || r.role)}`;
+  }
+  return o.ref ? fallback : o.coordinate ? 'on the page' : '';
+}
+
+const KEY_NAMES = { cmd: '⌘', command: '⌘', meta: '⌘', super: '⌘', ctrl: 'Ctrl', control: 'Ctrl', shift: '⇧', alt: '⌥', option: '⌥', return: 'Enter', enter: 'Enter', escape: 'Esc', esc: 'Esc', arrowup: '↑', up: '↑', arrowdown: '↓', down: '↓', arrowleft: '←', left: '←', arrowright: '→', right: '→', backspace: '⌫', delete: 'Del', space: 'Space', tab: 'Tab', pagedown: 'Page Down', pageup: 'Page Up' };
+const keys = (s) => String(s || '').trim().split(/\s+/).filter(Boolean).slice(0, 4)
+  .map((combo) => combo.split('+').map((k) => `<kbd>${esc(KEY_NAMES[k.toLowerCase()] || (k.length === 1 ? k.toUpperCase() : k))}</kbd>`).join('')).join(' ');
+
+const humanize = (s) => {
+  s = String(s || 'tool').replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').trim().toLowerCase();
+  return s.charAt(0).toUpperCase() + s.slice(1);
 };
 
-// -> { label (HTML), verb, icon }
+// computer actions -> [label, verb (status line), icon, done (summary)]
+const COMPUTER = {
+  left_click: ['Click', 'Clicking', 'cursor', 'clicked'], click: ['Click', 'Clicking', 'cursor', 'clicked'],
+  right_click: ['Right-click', 'Clicking', 'cursor', 'clicked'], double_click: ['Double-click', 'Clicking', 'cursor', 'clicked'],
+  triple_click: ['Triple-click', 'Clicking', 'cursor', 'clicked'], left_click_drag: ['Drag', 'Dragging', 'cursor', 'dragged'],
+  hover: ['Hover over', 'Hovering', 'cursor', 'hovered'], mouse_move: ['Move the mouse', 'Moving the mouse', 'cursor', 'moved the mouse'],
+  type: ['Type', 'Typing', 'keyboard', 'typed'], key: ['Press', 'Pressing keys', 'keyboard', 'pressed keys'],
+  screenshot: ['Take a screenshot', 'Looking at the page', 'camera', 'looked at the page'], zoom: ['Zoom in for a closer look', 'Looking closer', 'camera', 'looked at the page'],
+  scroll: ['Scroll', 'Scrolling', 'scroll', 'scrolled'], scroll_to: ['Scroll to', 'Scrolling', 'scroll', 'scrolled'], wait: ['Wait', 'Waiting', 'clock', 'waited'],
+};
+
+// -> { label (HTML), verb (status line), icon, done (past tense, for the steps summary) }
 function describe(name, inputStr) {
   const short = strip(name);
   const o = parseInput(inputStr) || {};
-  const c = (s, n) => `<code>${esc(clip(s, n || 48))}</code>`;
-  const q = (s, n) => `“${esc(clip(s, n || 40))}”`;
-  const target = o.ref || (o.coordinate ? `(${[].concat(o.coordinate).join(', ')})` : '');
+  const raw = typeof inputStr === 'string' && !parseInput(inputStr) ? inputStr : '';
   switch (short) {
     case 'navigate': {
-      if (o.url === 'back' || o.url === 'forward') return { label: `Go ${o.url}`, verb: 'Navigating', icon: 'globe' };
-      return { label: `Navigate to ${c(hostOf(o.url || ''))}`, verb: 'Navigating', icon: 'globe' };
+      if (o.url === 'back' || o.url === 'forward') return { label: `Go ${o.url}`, verb: `Going ${o.url}`, icon: 'globe', done: 'navigated' };
+      return { label: `Open ${c(hostOf(o.url || ''))}`, verb: 'Opening the page', icon: 'globe', done: 'navigated' };
     }
-    case 'tabs_create': return { label: o.url ? `Open tab ${c(hostOf(o.url))}` : 'Open new tab', verb: 'Opening a tab', icon: 'tabs' };
-    case 'tabs_close': return { label: 'Close tab', verb: 'Closing tab', icon: 'tabs' };
-    case 'tabs_select': return { label: 'Switch tab', verb: 'Switching tab', icon: 'tabs' };
-    case 'tabs_context': return { label: 'Check open tabs', verb: 'Checking tabs', icon: 'tabs' };
+    case 'tabs_create': return { label: o.url ? `Open ${c(hostOf(o.url))} in a new tab` : 'Open a new tab', verb: 'Opening a tab', icon: 'tabs', done: 'opened a tab' };
+    case 'tabs_close': return { label: 'Close a tab', verb: 'Closing a tab', icon: 'tabs', done: 'closed a tab' };
+    case 'tabs_select': return { label: 'Switch to another tab', verb: 'Switching tabs', icon: 'tabs', done: 'switched tabs' };
+    case 'tabs_context': return { label: 'Check which tabs are open', verb: 'Checking tabs', icon: 'tabs', done: 'checked tabs' };
     case 'computer': {
-      const [l, verb, ic] = COMPUTER[o.action] || [o.action || 'Act', 'Acting', 'cursor'];
+      const [l, verb, ic, done] = COMPUTER[o.action] || [humanize(o.action || 'act'), 'Working on the page', 'cursor', 'used the page'];
       let label = esc(l);
-      if (o.action === 'type') label += ` ${q(o.text)}`;
-      else if (o.action === 'key') label += ` ${c(o.text || o.key || '')}`;
-      else if (o.action === 'scroll') label += ` ${esc(o.scroll_direction || o.direction || '')}${target ? ` at ${c(target)}` : ''}`;
-      else if (o.action === 'wait') label += ` ${esc(o.duration ?? '')}s`;
-      else if (target) label += ` ${c(target)}`;
-      return { label, verb, icon: ic };
+      if (o.action === 'type') label += ` ${q(o.text)}${o.ref || o.target ? ` into ${element(o, 'a field')}` : ''}`;
+      else if (o.action === 'key') label += ` ${keys(o.text || o.key)}`;
+      else if (o.action === 'scroll') label += ` ${esc(o.scroll_direction || o.direction || '')}${o.ref ? ` in ${element(o)}` : ''}`;
+      else if (o.action === 'scroll_to') label += ` ${element(o, 'an element')}`;
+      else if (o.action === 'wait') label += ` ${esc(o.duration ?? 1)} second${Number(o.duration) === 1 ? '' : 's'}`;
+      else if (COMPUTER[o.action]?.[2] === 'cursor') label += ` ${element(o)}`;
+      return { label: label.trim(), verb, icon: ic, done };
     }
-    case 'read_page': return { label: o.ref ? `Read element ${c(o.ref)}` : 'Read page', verb: 'Reading page', icon: 'doc' };
-    case 'get_page_text': return { label: 'Read page text', verb: 'Reading page', icon: 'doc' };
-    case 'find': return { label: `Find ${q(o.query)}`, verb: 'Finding', icon: 'search' };
-    case 'form_input': return { label: `Fill ${c(o.ref || '')}${o.value != null ? ` with ${q(o.value, 30)}` : ''}`, verb: 'Filling form', icon: 'pencil' };
-    case 'javascript_tool': return { label: `Run JavaScript ${o.text || o.code ? c(o.text || o.code, 36) : ''}`, verb: 'Running JavaScript', icon: 'code' };
-    case 'read_console_messages': return { label: 'Read console', verb: 'Reading console', icon: 'terminal' };
-    case 'read_network_requests': return { label: 'Read network requests', verb: 'Reading network', icon: 'activity' };
-    case 'network_request': return { label: `Inspect request ${o.requestId ? c(o.requestId) : ''}`, verb: 'Inspecting request', icon: 'activity' };
-    case 'http_request': return { label: `${esc(o.method || 'GET')} ${c(hostOf(o.url || ''))}`, verb: 'Sending request', icon: 'activity' };
-    case 'network_intercept': return { label: `Intercept ${esc(o.action || 'network')}`, verb: 'Intercepting', icon: 'activity' };
-    case 'network_export': return { label: 'Export HAR', verb: 'Exporting', icon: 'activity' };
-    case 'cookies': return { label: `Cookies: ${esc(o.action || 'list')}`, verb: 'Reading cookies', icon: 'cookie' };
-    case 'gif_creator': return { label: `GIF: ${esc(o.action || '')}`, verb: 'Recording', icon: 'film' };
-    case 'file_upload': return { label: 'Upload file', verb: 'Uploading', icon: 'upload' };
-    case 'upload_image': return { label: 'Upload image', verb: 'Uploading', icon: 'upload' };
-    case 'resize_window': return { label: 'Resize window', verb: 'Resizing', icon: 'window' };
-    case 'cdp_command': return { label: `CDP ${c(o.method || '')}`, verb: 'Running CDP', icon: 'plug' };
-    case 'extension_reload': return { label: 'Reload extension', verb: 'Reloading', icon: 'plug' };
+    case 'read_page': return { label: o.ref ? `Read ${element(o, 'part of the page')}` : 'Read the page', verb: 'Reading the page', icon: 'doc', done: 'read the page' };
+    case 'get_page_text': return { label: 'Read the page text', verb: 'Reading the page', icon: 'doc', done: 'read the page' };
+    case 'find': return { label: `Look for ${q(o.query)}`, verb: 'Looking around the page', icon: 'search', done: 'searched the page' };
+    case 'form_input': return { label: `Fill ${element(o, 'a field')}${o.value != null ? ` with ${q(o.value, 30)}` : ''}`, verb: 'Filling in the form', icon: 'pencil', done: 'filled a form' };
+    case 'javascript_tool': return { label: 'Run a script on the page', verb: 'Running a script', icon: 'code', done: 'ran a script' };
+    case 'read_console_messages': return { label: 'Check the console for messages', verb: 'Checking the console', icon: 'terminal', done: 'checked the console' };
+    case 'read_network_requests': return { label: 'Look at the page’s network requests', verb: 'Checking network activity', icon: 'activity', done: 'checked the network' };
+    case 'network_request': return { label: 'Inspect a network request', verb: 'Inspecting a request', icon: 'activity', done: 'inspected a request' };
+    case 'http_request': return { label: `Send ${esc(o.method || 'GET')} to ${c(hostOf(o.url || ''))}`, verb: 'Sending a request', icon: 'activity', done: 'sent a request' };
+    case 'network_intercept': return { label: { add: 'Intercept matching requests', remove: 'Stop intercepting a request', clear: 'Stop intercepting requests', list: 'List intercepted requests' }[o.action] || 'Intercept network requests', verb: 'Setting up interception', icon: 'activity', done: 'intercepted requests' };
+    case 'network_export': return { label: 'Export network activity (HAR)', verb: 'Exporting', icon: 'activity', done: 'exported a HAR' };
+    case 'cookies': return { label: { set: 'Set a cookie', delete: 'Delete a cookie', clear: 'Clear cookies' }[o.action] || `Read cookies${o.url ? ` for ${c(hostOf(o.url))}` : ''}`, verb: 'Working with cookies', icon: 'cookie', done: 'checked cookies' };
+    case 'gif_creator': return { label: { start_recording: 'Start recording a GIF', stop_recording: 'Stop recording', export: 'Save the GIF', clear: 'Discard the recording' }[o.action] || 'Record a GIF', verb: 'Recording', icon: 'film', done: 'recorded a GIF' };
+    case 'file_upload': return { label: `Upload a file${o.ref ? ` to ${element(o, 'the page')}` : ''}`, verb: 'Uploading', icon: 'upload', done: 'uploaded a file' };
+    case 'upload_image': return { label: 'Upload an image', verb: 'Uploading', icon: 'upload', done: 'uploaded an image' };
+    case 'resize_window': return { label: `Resize the window${o.width && o.height ? ` to ${esc(o.width)}×${esc(o.height)}` : ''}`, verb: 'Resizing', icon: 'window', done: 'resized the window' };
+    case 'cdp_command': return { label: `Send a browser command ${c(o.method || '', 30)}`, verb: 'Talking to the browser', icon: 'plug', done: 'sent a browser command' };
+    case 'extension_reload': return { label: 'Reload the extension', verb: 'Reloading', icon: 'plug', done: 'reloaded the extension' };
     case 'Bash': case 'shell': case 'command_execution': {
-      const cmd = typeof inputStr === 'string' && !parseInput(inputStr) ? inputStr : Array.isArray(o.command) ? o.command.join(' ') : o.command || '';
-      return { label: `Run ${c(cmd, 50)}`, verb: 'Running command', icon: 'terminal' };
+      const cmd = raw || (Array.isArray(o.command) ? o.command.join(' ') : o.command || '');
+      return { label: o.description ? `${esc(clip(o.description, 50))}` : `Run ${c(cmd, 50)}`, verb: 'Running a command', icon: 'terminal', done: 'ran a command' };
     }
-    case 'Read': return { label: `Read ${c(String(o.file_path || '').split('/').pop())}`, verb: 'Reading file', icon: 'doc' };
-    case 'Write': return { label: `Write ${c(String(o.file_path || '').split('/').pop())}`, verb: 'Writing file', icon: 'pencil' };
-    case 'Edit': case 'MultiEdit': case 'NotebookEdit': return { label: `Edit ${c(String(o.file_path || o.notebook_path || '').split('/').pop())}`, verb: 'Editing file', icon: 'pencil' };
-    case 'file_change': return { label: 'Edit files', verb: 'Editing files', icon: 'pencil' };
-    case 'Grep': return { label: `Search ${q(o.pattern)}`, verb: 'Searching', icon: 'search' };
-    case 'Glob': return { label: `Find files ${c(o.pattern || '')}`, verb: 'Searching', icon: 'folder' };
-    case 'LS': return { label: `List ${c(o.path || '')}`, verb: 'Listing', icon: 'folder' };
-    case 'WebFetch': return { label: `Fetch ${c(hostOf(o.url || ''))}`, verb: 'Fetching', icon: 'link' };
-    case 'WebSearch': case 'web_search': return { label: `Search the web ${q(o.query || (typeof inputStr === 'string' && !parseInput(inputStr) ? inputStr : ''))}`, verb: 'Searching the web', icon: 'search' };
-    case 'Task': case 'Agent': return { label: `Subagent: ${esc(clip(o.description || o.prompt || '', 50))}`, verb: 'Running a subagent', icon: 'bot' };
-    case 'sidepanel_reply': return { label: 'Reply', verb: 'Writing', icon: 'spark' };
+    case 'Read': return { label: `Read ${file(o.file_path)}`, verb: 'Reading a file', icon: 'doc', done: 'read a file' };
+    case 'Write': return { label: `Create ${file(o.file_path)}`, verb: 'Writing a file', icon: 'pencil', done: 'wrote a file' };
+    case 'Edit': case 'MultiEdit': case 'NotebookEdit': return { label: `Edit ${file(o.file_path || o.notebook_path)}`, verb: 'Editing a file', icon: 'pencil', done: 'edited a file' };
+    case 'file_change': return { label: 'Edit files', verb: 'Editing files', icon: 'pencil', done: 'edited files' };
+    case 'Grep': return { label: `Search files for ${q(o.pattern)}`, verb: 'Searching files', icon: 'search', done: 'searched files' };
+    case 'Glob': return { label: `Find files ${c(o.pattern || '')}`, verb: 'Finding files', icon: 'folder', done: 'searched files' };
+    case 'LS': return { label: `List ${c(o.path || '')}`, verb: 'Listing files', icon: 'folder', done: 'listed files' };
+    case 'WebFetch': return { label: `Fetch ${c(hostOf(o.url || ''))}`, verb: 'Fetching a page', icon: 'link', done: 'fetched a page' };
+    case 'WebSearch': case 'web_search': return { label: `Search the web for ${q(o.query || raw)}`, verb: 'Searching the web', icon: 'search', done: 'searched the web' };
+    case 'Task': case 'Agent': return { label: `Hand off: ${esc(clip(o.description || o.prompt || '', 50))}`, verb: 'Working with a helper', icon: 'bot', done: 'used a helper' };
+    case 'TodoWrite': return { label: 'Update the plan', verb: 'Planning', icon: 'list', done: 'updated the plan' };
+    case 'sidepanel_reply': return { label: 'Reply', verb: 'Writing', icon: 'spark', done: 'replied' };
     default: {
       const arg = Object.values(o).find((v) => typeof v === 'string');
-      return { label: `${esc(short)}${arg ? ` ${c(arg, 40)}` : ''}`, verb: `Using ${short}`, icon: 'bolt' };
+      return { label: `${esc(humanize(short))}${arg ? ` ${c(arg, 40)}` : ''}`, verb: humanize(short), icon: 'bolt', done: humanize(short).toLowerCase() };
     }
   }
+}
+
+// "Read the page, clicked 3× and typed"
+function summarize(dones) {
+  const counts = new Map();
+  for (const d of dones) counts.set(d, (counts.get(d) || 0) + 1);
+  const parts = [...counts].map(([d, n]) => (n > 1 ? `${d} ${n}×` : d));
+  const s = parts.length > 1 ? `${parts.slice(0, -1).join(', ')} and ${parts.at(-1)}` : parts[0] || '';
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function pretty(s) {
@@ -328,7 +377,10 @@ function pretty(s) {
 // ---------- turn building ----------
 
 function ensureTurn() {
-  if (!turn) turn = add(el('div', 'turn'));
+  if (!turn) {
+    turn = add(el('div', 'turn'));
+    turn.since = lastUserTs;
+  }
   return turn;
 }
 
@@ -346,8 +398,9 @@ function closeThink(ts) {
 }
 
 function closeStream() {
-  if (streamEl) streamEl.classList.remove('streaming');
+  const m = streamEl;
   streamEl = null;
+  if (m) finishText(m);
 }
 
 function closeSteps() {
@@ -373,8 +426,8 @@ function updateSteps(g) {
   const head = g.querySelector('.sum');
   const n = `${all.length} step${all.length === 1 ? '' : 's'}`;
   head.innerHTML = running
-    ? `<b class="shimmer">${esc(last?.verb || 'Working')}…</b> · ${n}`
-    : `<b>${n}</b>${failed ? ` · ${failed} failed` : ''} · ${last?.querySelector('.lbl').innerHTML || ''}`;
+    ? `<b class="shimmer">${last?.querySelector('.lbl').innerHTML || 'Working'}…</b> <span class="n">${n}</span>`
+    : `<b>${esc(summarize(all.map((s) => s.done)))}</b> <span class="n">${n}${failed ? ` · <span class="bad">${failed} failed</span>` : ''}</span>`;
   const first = all[0]?.start;
   const end = Math.max(...all.map((s) => s.end || s.start || 0));
   g.querySelector('.gdur').textContent = !running && first ? fmtMs(end - first) : '';
@@ -386,7 +439,7 @@ function addStep(ev) {
   closeStream();
   if (!steps) {
     steps = add(el('div', `steps${replaying ? '' : ' open'}`), turn);
-    steps.innerHTML = `<button class="steps-head">${icon('chev').replace('<svg', '<svg class="chev"')}<span class="sum"></span><span class="dur gdur"></span></button><div class="steps-list"></div>`;
+    steps.innerHTML = `<button class="steps-head">${icon('chev').replace('<svg', '<svg class="chev"')}<span class="sum"></span><span class="dur gdur"></span></button>${fold('<div class="steps-list"></div>')}`;
     const g = steps;
     g.querySelector('.steps-head').addEventListener('click', () => {
       g.toggled = true;
@@ -397,8 +450,9 @@ function addStep(ev) {
   const s = el('div', 'step run');
   s.start = ev.ts;
   s.verb = d.verb;
-  s.innerHTML = `<button class="step-row"><span class="si">${icon(d.icon)}</span><span class="lbl">${d.label}</span><span class="dur"></span><span class="st"><span class="spin"></span></span></button>
-    <div class="step-detail"><div class="k">${esc(strip(ev.name))} input</div><pre class="in"></pre></div>`;
+  s.done = d.done;
+  s.innerHTML = `<button class="step-row" title="Show details"><span class="si">${icon(d.icon)}</span><span class="lbl">${d.label}</span><span class="dur"></span><span class="st"><span class="spin"></span></span></button>
+    ${fold(`<div class="step-detail"><div class="k">Tool · ${esc(strip(ev.name))}</div><pre class="in"></pre></div>`)}`;
   s.querySelector('.in').textContent = pretty(ev.input);
   s.querySelector('.step-row').addEventListener('click', () => s.classList.toggle('open'));
   stepEls.set(ev.id, s);
@@ -418,8 +472,11 @@ function finishStep(ev) {
   if (ev.ts && s.start) s.querySelector('.dur').textContent = fmtMs(ev.ts - s.start);
   const det = s.querySelector('.step-detail');
   if (ev.text) {
-    det.insertAdjacentHTML('beforeend', `<div class="k">${ev.ok ? 'Result' : 'Error'}</div><pre></pre>`);
+    if (ev.ok) learnRefs(ev.text);
+    det.insertAdjacentHTML('beforeend', `<div class="k">${ev.ok ? 'Result' : 'What went wrong'}</div><pre></pre>`);
     det.lastElementChild.textContent = ev.text;
+    // Say why a step failed without making people open it.
+    if (!ev.ok) s.querySelector('.step-row').insertAdjacentElement('afterend', el('div', 'why')).textContent = clip(ev.text.replace(/^error:\s*/i, ''), 140);
   }
   if (ev.image) {
     const img = el('img', 'shot-thumb');
@@ -439,7 +496,7 @@ function addThinking(ev) {
     thinkEl = add(el('div', 'think'), turn);
     thinkEl.start = ev.ts || Date.now();
     thinkEl.raw = '';
-    thinkEl.innerHTML = `<button>${icon('chev').replace('<svg', '<svg class="chev"')}<span class="lbl shimmer">Thinking…</span></button><div class="body"></div>`;
+    thinkEl.innerHTML = `<button>${icon('chev').replace('<svg', '<svg class="chev"')}<span class="lbl shimmer">Thinking…</span></button>${fold('<div class="body"></div>')}`;
     const t = thinkEl;
     t.querySelector('button').addEventListener('click', () => t.raw.trim() && t.classList.toggle('open'));
   }
@@ -454,16 +511,44 @@ function addText(ev, final) {
   closeThink(ev.ts);
   closeSteps();
   if (!streamEl) {
-    streamEl = add(el('div', 'md'), turn);
+    streamEl = add(el('div', 'md streaming'), turn);
     streamEl.raw = '';
+    streamEl.shown = 0;
   }
-  if (final) streamEl.raw = ev.text || '';
-  else streamEl.raw += ev.text || '';
-  streamEl.innerHTML = markdown(streamEl.raw);
-  if (final) closeStream();
-  else streamEl.classList.add('streaming');
-  if (!replaying && nearBottom()) scrollDown();
+  const m = streamEl;
+  m.raw = final ? ev.text || '' : m.raw + (ev.text || '');
+  if (final) {
+    // The block is complete; let the reveal catch up on its own, and start a fresh block for any text after it.
+    m.final = true;
+    streamEl = null;
+  }
+  if (replaying || calm.matches || document.hidden) finishText(m);
+  else if (!m.raf) m.raf = requestAnimationFrame(() => revealText(m));
   updateStatus();
+}
+
+// Text arrives in uneven chunks; reveal it at a steady pace that speeds up when it falls behind.
+function revealText(m) {
+  m.raf = 0;
+  const left = m.raw.length - m.shown;
+  if (left > 0) {
+    const stick = nearBottom();
+    m.shown = Math.min(m.raw.length, m.shown + Math.max(3, Math.ceil(left / 8)));
+    m.innerHTML = markdown(m.raw.slice(0, m.shown));
+    if (stick) scrollDown();
+  }
+  if (m.shown < m.raw.length) m.raf = requestAnimationFrame(() => revealText(m));
+  else if (m.final) finishText(m);
+}
+
+function finishText(m) {
+  cancelAnimationFrame(m.raf);
+  m.raf = 0;
+  const stick = replaying || nearBottom();
+  if (m.shown !== m.raw.length || !m.innerHTML) m.innerHTML = markdown(m.raw);
+  m.shown = m.raw.length;
+  if (m !== streamEl) m.classList.remove('streaming');
+  if (stick) scrollDown();
 }
 
 function renderPlan(ev) {
@@ -489,8 +574,8 @@ function renderPermission(ev) {
   const d = describe(ev.tool, ev.input);
   const where = ev.key && ev.key.includes(':') && /\./.test(ev.key) ? ev.key.split(':').slice(1).join(':') : currentHost;
   const card = add(el('div', 'perm'), turn);
-  card.innerHTML = `<div class="q"><span class="si">${icon('shield')}</span><div><b>Allow this action?</b><small>${d.label}${where ? ` · on ${esc(where)}` : ''}</small></div></div>
-    <details><summary>Details</summary><pre></pre></details>
+  card.innerHTML = `<div class="q"><span class="si">${icon(d.icon)}</span><div><b>${d.label}</b><small>Allow this${where ? ` on ${esc(where)}` : ''}?</small></div></div>
+    <details><summary>Show exact request</summary><pre></pre></details>
     <div class="btns"><button class="btn primary" data-d="allow">Allow once</button><button class="btn" data-d="always">Always allow</button><button class="btn" data-d="deny">Deny</button></div>`;
   card.querySelector('pre').textContent = pretty(ev.input);
   card.querySelectorAll('.btns button').forEach((b) => b.addEventListener('click', () => port?.postMessage({ type: 'approve', id: ev.id, decision: b.dataset.d })));
@@ -511,15 +596,47 @@ function renderDone(ev) {
   const t = turn;
   closeTurn(ev.ts);
   if (ev.error) return add(el('div', 'error', `${icon('alert')}<span></span>`)).querySelector('span').textContent = ev.error;
-  const bits = [ev.ms && fmtMs(ev.ms), ev.turns > 1 && `${ev.turns} turns`, ev.tokens && `${fmtTokens(ev.tokens)} tokens`, ev.cost && `$${ev.cost.toFixed(4)}`, lastModel].filter(Boolean);
-  const meta = el('div', 'turn-meta', `<span class="ok">${icon('check')}</span><span>${esc(bits.join(' · '))}</span><span class="acts"><button class="mini" title="Copy answer">${icon('copy')}</button></span>`);
-  meta.querySelector('button').addEventListener('click', () => copy([...(t || log).querySelectorAll('.md')].map((m) => m.raw).filter(Boolean).join('\n\n')));
+  const bits = ev.replay
+    ? [`Replayed ${ev.steps} step${ev.steps === 1 ? '' : 's'} in ${fmtMs(ev.ms)}`, 'no AI, 0 tokens']
+    : [ev.ms && fmtMs(ev.ms), ev.turns > 1 && `${ev.turns} turns`, ev.tokens && `${fmtTokens(ev.tokens)} tokens`, ev.cost && `$${ev.cost.toFixed(4)}`, lastModel].filter(Boolean);
+  const canSave = !ev.replay && t?.querySelector('.step');
+  const meta = el('div', 'turn-meta', `<span class="ok">${icon(ev.replay ? 'play' : 'check')}</span><span>${esc(bits.join(' · '))}</span><span class="acts"><button class="mini" data-a="copy" title="Copy answer">${icon('copy')}</button>${canSave ? `<button class="mini" data-a="save" title="Save these steps as a workflow you can replay without the AI">${icon('bookmark')}</button>` : ''}</span>`);
+  meta.querySelector('[data-a="copy"]').addEventListener('click', () => copy([...(t || log).querySelectorAll('.md')].map((m) => m.raw).filter(Boolean).join('\n\n')));
+  meta.querySelector('[data-a="save"]')?.addEventListener('click', () => askWorkflowName(meta, t.since));
   add(meta, t || log);
+}
+
+// Inline "name this workflow" form under a reply.
+function askWorkflowName(after, since) {
+  after.parentElement.querySelector('.savewf')?.remove();
+  const f = el('form', 'savewf', `${icon('bookmark')}<span>/</span><input placeholder="name, e.g. daily-report" spellcheck="false" maxlength="40" /><button class="btn primary">Save</button><button type="button" class="mini" title="Cancel">${icon('x')}</button>`);
+  const name = f.querySelector('input');
+  f.addEventListener('submit', (e) => {
+    e.preventDefault();
+    if (!name.value.trim()) return name.focus();
+    port?.postMessage({ type: 'save_workflow', sid, name: name.value, since });
+    f.remove();
+  });
+  f.querySelector('button[type="button"]').addEventListener('click', () => f.remove());
+  after.after(f);
+  name.focus();
+  if (nearBottom()) scrollDown();
+}
+
+function renderWorkflowFailed(ev) {
+  closeTurn(ev.ts);
+  const card = add(el('div', 'wf-failed', `<div class="q"><span class="si">${icon('alert')}</span><div><b>Replay of /${esc(ev.name)} stopped at step ${ev.done + 1} of ${ev.total}</b><small></small></div></div>
+    <div class="btns"><button class="btn primary">${icon('spark')}Let the AI finish</button><button class="btn" data-a="retry">${icon('play')}Try again</button></div>`));
+  card.querySelector('small').textContent = ev.error;
+  const [finish, retry] = card.querySelectorAll('button');
+  finish.addEventListener('click', () => send(ev.prompt));
+  retry.addEventListener('click', () => runWorkflow(ev.name));
 }
 
 function renderUser(ev) {
   closeTurn(ev.ts);
-  const m = el('div', 'msg-user');
+  lastUserTs = ev.ts || 0;
+  const m = el('div', `msg-user${ev.workflow ? ' wf' : ''}`);
   if (ev.tab) {
     const tab = el('div', 'tab', `${icon('globe')}<span></span>`);
     tab.querySelector('span').textContent = ev.tab.replace(/^\[|\]$/g, '').replace(/^Tab \d+:\s*/, '');
@@ -536,7 +653,8 @@ function renderUser(ev) {
     m.appendChild(th);
   }
   const b = el('div', 'bubble');
-  b.textContent = ev.text;
+  if (ev.workflow) b.innerHTML = `${icon('play')}<span></span>`;
+  (ev.workflow ? b.querySelector('span') : b).textContent = ev.workflow ? `Replay /${ev.workflow}` : ev.text;
   m.appendChild(b);
   const acts = el('div', 'acts', `<button class="mini" title="Copy">${icon('copy')}</button><button class="mini" title="Edit and resend">${icon('edit')}</button>`);
   const [cp, ed] = acts.querySelectorAll('button');
@@ -563,6 +681,7 @@ function render(ev) {
     case 'permission': return renderPermission(ev);
     case 'permission_done': return resolvePermission(ev);
     case 'done': return renderDone(ev);
+    case 'workflow_failed': return renderWorkflowFailed(ev);
     case 'stopped':
       closeTurn(ev.ts);
       return add(el('div', 'notice', 'Stopped'));
@@ -588,6 +707,7 @@ function resetLog() {
   log.textContent = '';
   turn = steps = thinkEl = streamEl = null;
   stepEls.clear();
+  refNames.clear();
   permEls.clear();
   lastModel = '';
 }
@@ -632,15 +752,20 @@ function setBusy(on) {
   if (on && !busySince) busySince = Date.now();
   if (!on) busySince = 0;
   document.body.classList.toggle('busy', on);
-  sendBtn.title = on ? 'Stop (Esc)' : 'Send (Enter)';
+  updateSendState();
   clearInterval(setBusy.timer);
   if (on) setBusy.timer = setInterval(updateStatus, 1000);
+  // Something to look at between sending and the first word back.
+  if (on && !turn && !replaying && !log.querySelector(':scope > .pending')) add(el('div', 'pending', '<i></i><i></i><i></i>'));
+  if (!on) log.querySelector(':scope > .pending')?.remove();
   updateStatus();
 }
 
 function updateStatus() {
   const st = $('status');
-  if (busy) {
+  if (voice) {
+    st.innerHTML = `<span class="rec"></span><span class="verb">${voice.heard || voice.interim ? 'Listening' : 'Listening… start speaking'}</span><span class="esc">pause to send · <kbd>Esc</kbd> to cancel</span>`;
+  } else if (busy) {
     const running = [...log.querySelectorAll('.step.run')].pop();
     const verb = running ? running.verb : thinkEl ? 'Thinking' : streamEl ? 'Writing' : 'Working';
     const secs = busySince ? Math.max(0, Math.round((Date.now() - busySince) / 1000)) : 0;
@@ -725,6 +850,7 @@ function renderAgentUI() {
   }));
   $('modeSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', b.dataset.v === settings.mode));
   $('themeSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', b.dataset.v === settings.theme));
+  $('voiceFixSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', b.dataset.v === String(settings.voiceFix !== false)));
 
   const h = $('agentHint');
   if (settings.agent === 'terminal') h.innerHTML = 'In any terminal AI connected to the <code>ai-in-chrome</code> MCP server, say: <code>listen to the AI in Chrome side panel</code>.';
@@ -780,7 +906,10 @@ function openDrawer(id) {
     port?.postMessage({ type: 'list_chats' });
     renderHistory();
     $('historySearch').focus();
-  } else renderShortcuts();
+  } else {
+    renderShortcuts();
+    renderWorkflows();
+  }
 }
 
 function closeDrawers() {
@@ -850,11 +979,17 @@ function commands() {
     { name: 'history', desc: 'Open chat history', icon: 'history', run: () => openDrawer('historyDrawer') },
     { name: 'settings', desc: 'Open settings', icon: 'settings', run: () => openDrawer('settingsDrawer') },
     { name: 'screenshot', desc: 'Attach a screenshot of this tab', icon: 'camera', run: attachScreenshot },
+    { name: 'voice', desc: 'Speak your message instead of typing', icon: 'mic', run: toggleVoice },
     { name: 'summarize', desc: 'Summarize this page', icon: 'doc', run: () => send('Summarize this page') },
     { name: 'mode', desc: `Switch to "${settings.mode === 'ask' ? MODES.auto.name : MODES.ask.name}"`, icon: 'shield', run: () => setSetting('mode', settings.mode === 'ask' ? 'auto' : 'ask') },
   ];
+  builtins.push(
+    { name: 'save', desc: 'Save this chat’s browser steps as a workflow: /save name', icon: 'bookmark', run: () => fill('/save ') },
+    { name: 'skill', desc: 'Have the AI write a reusable skill for this task: /skill name', icon: 'spark', run: () => fill('/skill ') },
+  );
   const user = (settings.shortcuts || []).map((s) => ({ name: s.name, desc: s.prompt, icon: 'wand', run: () => send(s.prompt) }));
-  return [...user, ...builtins];
+  const flows = workflows.map((w) => ({ name: w.name, desc: `Replay ${w.steps.length} steps, no AI${w.title ? ` · ${w.title}` : ''}`, icon: 'play', run: () => runWorkflow(w.name) }));
+  return [...flows, ...user, ...builtins];
 }
 
 let slashSel = 0;
@@ -880,6 +1015,41 @@ function updateSlash() {
     runSlash(+b.dataset.i);
   }));
   menu.hidden = false;
+}
+
+function fill(text) {
+  input.value = text;
+  autosize();
+  input.focus();
+}
+
+async function runWorkflow(name) {
+  if (busy) return toast('Still working. Press Esc to stop first.');
+  const tab = await activeTab();
+  port?.postMessage({ type: 'run_workflow', sid, name, tabId: tab?.id });
+}
+
+const skillPrompt = (name) => `Turn the task you did in this chat into a reusable skill named "${name}" so next time it can be done quickly, without exploring the page again. ` +
+  `Write it to ~/.claude/skills/${name}/SKILL.md with frontmatter (name, and a description of when to use it). ` +
+  'In the body, list the exact steps: the URLs to open, the elements to use by their visible names, what to type, and how to check it worked. ' +
+  'Mention anything that changes between runs as an input to ask for. Keep it short.';
+
+function renderWorkflows() {
+  const box = $('workflowList');
+  box.textContent = '';
+  if (!workflows.length) box.innerHTML = '<p class="hint">None yet. After the AI finishes a task, click the bookmark under its reply.</p>';
+  for (const w of workflows) {
+    const r = el('div', 'shortcut', `<code></code><div></div><button class="mini" title="Run">${icon('play')}</button><button class="mini" title="Delete">${icon('trash')}</button>`);
+    r.querySelector('code').textContent = `/${w.name}`;
+    r.querySelector('div').textContent = `${w.steps.length} steps${w.title ? ` · ${w.title}` : ''}`;
+    const [run, del] = r.querySelectorAll('button');
+    run.addEventListener('click', () => {
+      closeDrawers();
+      runWorkflow(w.name);
+    });
+    del.addEventListener('click', () => chrome.storage.local.set({ workflows: workflows.filter((x) => x.name !== w.name) }));
+    box.appendChild(r);
+  }
 }
 
 function runSlash(i) {
@@ -947,6 +1117,255 @@ function renderAttachments() {
   updateSendState();
 }
 
+// ---------- voice ----------
+
+// Chrome's speech recognition. A side panel can't show the microphone prompt, so the first time we ask from a tab (mic.html).
+const Recognition = self.SpeechRecognition || self.webkitSpeechRecognition;
+let voice = null; // { rec, base, heard, interim, send, timer }
+
+async function micState() {
+  try {
+    return (await navigator.permissions.query({ name: 'microphone' })).state;
+  } catch {
+    return 'prompt';
+  }
+}
+
+async function toggleVoice() {
+  if (voice) return stopVoice(true);
+  if (!Recognition) return toast('Voice input isn\'t supported in this browser');
+  const state = await micState();
+  if (state === 'denied') return toast('Microphone is blocked for AI in Chrome. Allow it in Chrome’s site settings.');
+  if (state !== 'granted') return askMic();
+  startVoice();
+}
+
+function askMic() {
+  chrome.tabs.create({ url: chrome.runtime.getURL('mic.html') });
+  toast('Allow the microphone in the new tab');
+}
+
+function startVoice() {
+  if (voice) return;
+  const rec = new Recognition();
+  rec.lang = navigator.language || 'en-US';
+  rec.continuous = true;
+  rec.interimResults = true;
+  const base = input.value.trim();
+  voice = { rec, base: base ? `${base} ` : '', heard: '', interim: '', send: true };
+  const v = voice;
+  rec.onresult = (e) => {
+    v.interim = '';
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      if (e.results[i].isFinal) v.heard += e.results[i][0].transcript;
+      else v.interim += e.results[i][0].transcript;
+    }
+    input.value = v.base + v.heard + v.interim;
+    autosize();
+    updateStatus();
+    // A pause after speaking sends the message.
+    clearTimeout(v.timer);
+    v.timer = setTimeout(() => stopVoice(true), v.interim ? 2500 : 1400);
+  };
+  rec.onerror = (e) => {
+    v.send = false;
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') askMic();
+    else if (e.error === 'no-speech') toast('Didn’t hear anything');
+    else if (e.error === 'network') toast('Voice input needs an internet connection');
+    else if (e.error === 'audio-capture') toast('No microphone found');
+    else if (e.error !== 'aborted') toast(`Voice input stopped: ${e.error}`);
+  };
+  rec.onend = () => {
+    clearTimeout(v.timer);
+    if (voice === v) voice = null;
+    const text = (v.base + v.heard).trim();
+    if (!v.typed) input.value = text;
+    autosize();
+    setVoiceUI();
+    if (v.send && v.heard.trim()) polishAndSend(text);
+  };
+  try {
+    rec.start();
+  } catch {
+    voice = null;
+    return toast('Couldn’t start the microphone');
+  }
+  setVoiceUI();
+}
+
+// send: keep what was heard and send it; otherwise drop it and put the box back how it was.
+function stopVoice(sendIt) {
+  if (!voice) return;
+  clearTimeout(voice.timer);
+  voice.send = sendIt;
+  if (sendIt) voice.rec.stop();
+  else {
+    voice.heard = '';
+    voice.rec.abort();
+  }
+}
+
+function setVoiceUI() {
+  const on = !!voice;
+  $('micBtn').classList.toggle('on', on);
+  $('micBtn').title = on ? 'Stop and send' : 'Speak your message';
+  $('composer').classList.toggle('listening', on);
+  input.placeholder = on ? 'Listening…' : PLACEHOLDER;
+  updateSendState();
+  updateStatus();
+}
+
+const PLACEHOLDER = input.placeholder;
+
+// ---------- voice clean-up: a separate small model fixes what speech recognition misheard ----------
+
+const VOICE_FIX_PROMPT = 'You fix speech-to-text transcripts. The user dictated a message to an AI assistant that controls their web browser. ' +
+  'Correct words the speech recognizer most likely misheard: names, product and technical terms, words from the page they are on, homophones, split or merged words. ' +
+  'Fix punctuation and capitalization. Keep their meaning, wording and language. Do not answer, explain, translate, or add anything. ' +
+  'If it is already right, return it unchanged. Reply with only the corrected message text.';
+
+// What the fixer gets to go on: the page, and the last thing said in the chat.
+function voiceContext() {
+  const lastUser = [...log.querySelectorAll('.msg-user .bubble')].pop()?.textContent || '';
+  const lastAi = [...log.querySelectorAll('.md')].pop()?.raw || '';
+  return [
+    currentTab && `Page: ${clip(currentTab.title, 80)} (${hostOf(currentTab.url || '')})`,
+    lastUser && `Their last message: ${clip(lastUser, 160)}`,
+    lastAi && `Assistant's last reply: ${clip(lastAi, 240)}`,
+  ].filter(Boolean).join('\n');
+}
+
+// Chrome's built-in model (Gemini Nano) runs on this computer: fast and free. Otherwise the native host
+// asks Ollama or a one-shot Claude Haiku.
+let nano = null;
+async function fixWithChrome(text, context) {
+  if (!self.LanguageModel || (await LanguageModel.availability().catch(() => 'unavailable')) !== 'available') return undefined;
+  nano ||= LanguageModel.create({ initialPrompts: [{ role: 'system', content: VOICE_FIX_PROMPT }] });
+  const s = await (await nano).clone();
+  try {
+    return await s.prompt(`${context ? `${context}\n\n` : ''}Transcript: ${text}`);
+  } finally {
+    s.destroy();
+  }
+}
+
+const fixWaits = new Map(); // id -> resolve
+function fixWithHost(text, context) {
+  const id = `v${Date.now()}`;
+  port?.postMessage({ type: 'voice_fix', sid, id, text, context, kind: settings.agent, model: currentModel(), ollamaUrl: settings.ollamaUrl });
+  return new Promise((resolve) => {
+    fixWaits.set(id, resolve);
+    setTimeout(() => fixWaits.delete(id) && resolve(null), 16000);
+  });
+}
+
+// Model output that is clearly not a corrected transcript (an answer, a refusal, an essay) is ignored.
+function sane(original, fixed) {
+  fixed = String(fixed || '').trim().replace(/^transcript:\s*/i, '').replace(/^["“](.*)["”]$/s, '$1').trim();
+  if (!fixed || fixed.length > original.length * 1.6 + 30 || fixed.split('\n').length > original.split('\n').length + 1) return original;
+  return fixed;
+}
+
+async function fixTranscript(text) {
+  const context = voiceContext();
+  try {
+    const local = await fixWithChrome(text, context);
+    if (local !== undefined) return sane(text, local);
+  } catch {}
+  return sane(text, await fixWithHost(text, context));
+}
+
+// Word-level diff (LCS), for the animation: [{ w, op: '=' | '-' | '+' }]
+function wordDiff(a, b) {
+  const x = a.split(/\s+/).filter(Boolean);
+  const y = b.split(/\s+/).filter(Boolean);
+  const n = x.length;
+  const m = y.length;
+  const L = Array.from({ length: n + 1 }, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) L[i][j] = x[i] === y[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = [];
+  let i = 0;
+  let j = 0;
+  while (i < n || j < m) {
+    if (i < n && j < m && x[i] === y[j]) {
+      out.push({ w: x[i++], op: '=' });
+      j++;
+    }
+    else if (j < m && (i >= n || L[i][j + 1] >= L[i + 1][j])) out.push({ w: y[j++], op: '+' });
+    else out.push({ w: x[i++], op: '-' });
+  }
+  return out;
+}
+
+let polish = null; // { card, original, fixed, timer }
+
+async function polishAndSend(text) {
+  if (!settings.voiceFix) return send(text);
+  cancelPolish();
+  fill('');
+  const card = el('div', 'vfix', `<div class="vh"><span class="spark">${icon('spark')}</span><span class="vl shimmer">Making sure I heard you right…</span><span class="spacer"></span><button class="mini" data-a="undo" title="Use exactly what was heard">${icon('x')}</button></div><div class="vt"></div>`);
+  card.querySelector('.vt').textContent = text;
+  card.querySelector('[data-a="undo"]').addEventListener('click', () => cancelPolish(true));
+  $('composer').before(card);
+  const p = (polish = { card, original: text });
+  const fixed = await fixTranscript(text);
+  if (polish !== p) return; // cancelled
+  p.fixed = fixed;
+  const diff = wordDiff(text, fixed);
+  const changed = diff.filter((d) => d.op === '+').length;
+  const label = card.querySelector('.vl');
+  label.classList.remove('shimmer');
+  if (!changed && fixed === text) {
+    label.textContent = 'Got it';
+    p.timer = setTimeout(() => finishPolish(fixed), 250);
+    return;
+  }
+  // Removed words strike through and fold away; corrected words fade in, one after another.
+  const vt = card.querySelector('.vt');
+  vt.textContent = '';
+  let k = 0;
+  for (const d of diff) {
+    const w = el('span', d.op === '=' ? 'same' : d.op === '+' ? 'in' : 'out');
+    w.textContent = `${d.w} `; // the space folds away with a removed word
+    if (d.op !== '=') w.style.animationDelay = `${(k++ * 70)}ms`;
+    vt.append(w);
+  }
+  label.innerHTML = `Fixed ${changed || 'a few'} word${changed === 1 ? '' : 's'} · <button class="link" data-a="orig">use original</button> · <button class="link" data-a="edit">edit</button>`;
+  label.querySelector('[data-a="orig"]').addEventListener('click', () => cancelPolish(true));
+  label.querySelector('[data-a="edit"]').addEventListener('click', () => {
+    cancelPolish();
+    fill(fixed);
+  });
+  card.classList.add('done');
+  p.timer = setTimeout(() => finishPolish(fixed), 1600 + k * 70);
+}
+
+function finishPolish(text) {
+  const p = polish;
+  if (!p) return;
+  polish = null;
+  p.card.classList.add('leaving');
+  setTimeout(() => p.card.remove(), 180);
+  send(text);
+}
+
+// restore: put what was actually heard back in the box instead of sending.
+function cancelPolish(restore = false) {
+  const p = polish;
+  if (!p) return false;
+  polish = null;
+  clearTimeout(p.timer);
+  p.card.remove();
+  if (restore) fill(p.original);
+  return true;
+}
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg?.type !== 'aichrome-mic-granted') return;
+  toast('Microphone ready, listening…');
+  startVoice();
+});
+
 // ---------- current tab ----------
 
 async function activeTab() {
@@ -997,6 +1416,15 @@ function connect() {
     else if (msg.type === 'terminal') {
       terminal = msg;
       renderAgentUI();
+    } else if (msg.type === 'voice_fixed') {
+      fixWaits.get(msg.id)?.(msg.text);
+      fixWaits.delete(msg.id);
+    } else if (msg.type === 'queue') {
+      if (msg.sid !== sid) return;
+      renderQueue(msg.items || []);
+      if (msg.restore && !input.value.trim()) fill(msg.restore);
+    } else if (msg.type === 'workflow_saved') {
+      toast(msg.error || `Saved /${msg.name} (${msg.count} steps). Type /${msg.name} to replay it`, 3500);
     } else if (msg.type === 'chats') {
       chatList = msg.chats || [];
       if (!$('historyDrawer').hidden) renderHistory();
@@ -1014,6 +1442,7 @@ async function openChat(next) {
   await chrome.storage.local.set({ [`panelChat:${windowId}`]: sid });
   resetLog();
   setBusy(false);
+  renderQueue([]);
   renderEmpty();
   port?.postMessage({ type: 'hello', sid });
   input.focus();
@@ -1028,7 +1457,17 @@ function newChat() {
 
 async function send(text) {
   text = String(text || '').trim();
-  if ((!text && !attachments.length) || busy) return;
+  if (!text && !attachments.length) return;
+  let m;
+  if ((m = /^\/save\s+(\S+)$/.exec(text))) {
+    port?.postMessage({ type: 'save_workflow', sid, name: m[1], since: 0 });
+    return fill('');
+  }
+  if ((m = /^\/skill\s+([\w-]+)$/.exec(text))) text = skillPrompt(m[1]);
+  else if ((m = /^\/([\w-]+)$/.exec(text)) && workflows.some((w) => w.name === m[1])) {
+    fill('');
+    return runWorkflow(m[1]);
+  }
   if (!text) text = 'What do you see in this image?';
   const tab = await activeTab();
   const images = attachments.map(({ mediaType, data }) => ({ mediaType, data }));
@@ -1048,8 +1487,31 @@ function autosize() {
   updateSendState();
 }
 
+// While the AI works, the button stops it, or queues what you typed as a follow-up.
 function updateSendState() {
-  sendBtn.disabled = !busy && !input.value.trim() && !attachments.length;
+  const has = !!(input.value.trim() || attachments.length);
+  sendBtn.disabled = !busy && !has;
+  sendBtn.classList.toggle('queue', busy && has);
+  sendBtn.title = busy ? (has ? 'Send when this finishes (Enter)' : 'Stop (Esc)') : 'Send (Enter)';
+  if (!voice) input.placeholder = busy ? 'Add a follow-up… it’s sent when this finishes' : PLACEHOLDER;
+}
+
+function renderQueue(items) {
+  const box = $('queue');
+  box.hidden = !items.length;
+  box.textContent = '';
+  for (const q of items) {
+    const r = el('div', 'qitem', `<span class="ql">Queued</span><span class="qt"></span><button class="mini" title="Remove">${icon('x')}</button>`);
+    r.querySelector('.qt').textContent = `${q.images ? `🖼 ${q.images} · ` : ''}${q.text}`;
+    r.querySelector('button').addEventListener('click', () => port?.postMessage({ type: 'unqueue', sid, id: q.id }));
+    box.appendChild(r);
+  }
+  if (items.length) {
+    const now = el('button', 'qnow', `${icon('bolt')}Send now`);
+    now.title = 'Stop the current task and send the queued message';
+    now.addEventListener('click', () => port?.postMessage({ type: 'send_now', sid }));
+    box.appendChild(now);
+  }
 }
 
 // ---------- init ----------
@@ -1088,6 +1550,7 @@ async function init() {
   $('historySearch').addEventListener('input', renderHistory);
   $('modeSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('mode', b.dataset.v)));
   $('themeSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('theme', b.dataset.v)));
+  $('voiceFixSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('voiceFix', b.dataset.v === 'true')));
   $('cwd').value = settings.cwd;
   $('model').addEventListener('change', () => setSetting(isOllama() ? 'ollamaModel' : 'model', $('model').value.trim()));
   for (const id of ['cwd', 'ollamaUrl']) $(id).addEventListener('change', () => setSetting(id, $(id).value.trim()));
@@ -1105,8 +1568,13 @@ async function init() {
   });
 
   // composer
-  sendBtn.addEventListener('click', () => (busy ? port?.postMessage({ type: 'stop', sid }) : send(input.value)));
-  input.addEventListener('input', () => {
+  sendBtn.addEventListener('click', () => (busy && sendBtn.classList.contains('queue') === false ? port?.postMessage({ type: 'stop', sid }) : send(input.value)));
+  input.addEventListener('input', (e) => {
+    if (voice && e.isTrusted) {
+      // Typing takes over from the microphone; keep what's in the box.
+      voice.typed = true;
+      stopVoice(false);
+    }
     autosize();
     slashSel = 0;
     updateSlash();
@@ -1138,6 +1606,8 @@ async function init() {
     e.target.value = '';
   });
   $('shotBtn').addEventListener('click', attachScreenshot);
+  $('micBtn').addEventListener('click', toggleVoice);
+  $('micBtn').hidden = !Recognition;
 
   // drag & drop
   let drag = 0;
@@ -1167,12 +1637,21 @@ async function init() {
 
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    if (!$('lightbox').hidden) $('lightbox').hidden = true;
+    if (voice) stopVoice(false);
+    else if (polish) cancelPolish(true);
+    else if (!$('lightbox').hidden) $('lightbox').hidden = true;
     else if (!$('slash').hidden || !$('agentMenu').hidden || !$('modeMenu').hidden) closeMenus();
     else if (!$('historyDrawer').hidden || !$('settingsDrawer').hidden) closeDrawers();
     else if (busy) port?.postMessage({ type: 'stop', sid });
     else return;
     e.preventDefault();
+  });
+
+  workflows = (await chrome.storage.local.get('workflows')).workflows || [];
+  chrome.storage.onChanged.addListener((ch) => {
+    if (!ch.workflows) return;
+    workflows = ch.workflows.newValue || [];
+    if (!$('settingsDrawer').hidden) renderWorkflows();
   });
 
   renderAgentUI();

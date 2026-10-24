@@ -1,7 +1,7 @@
 // AI in Chrome: accessibility-tree snapshot with stable element refs (ref_N).
 // Runs in the extension's isolated world; background.js calls window.__aichromeTree / __aichromeRef.
 (() => {
-  if (window.__aichromeTree) return;
+  if (window.__aichromeLocate) return; // (checks the newest function, so a page holding an older copy gets this one)
 
   const refs = new Map(); // ref -> WeakRef<Element>
   const reverse = new WeakMap(); // Element -> ref
@@ -152,6 +152,51 @@
   }
 
   window.__aichromeRef = (ref) => refs.get(ref)?.deref() || null;
+
+  // Workflows: describe the element behind a ref, so a replay can find the same element again on a fresh page.
+  window.__aichromeDescribe = (ref) => {
+    const el = window.__aichromeRef(ref);
+    if (!el || !el.isConnected) return null;
+    const role = roleOf(el) || el.tagName.toLowerCase();
+    return {
+      role,
+      name: clean(nameOf(el, role) || ''),
+      tag: el.tagName.toLowerCase(),
+      id: el.id || '',
+      placeholder: el.getAttribute('placeholder') || '',
+      href: el.getAttribute('href') || '',
+    };
+  };
+
+  // Best visible match for a description from __aichromeDescribe, as a fresh ref (or null).
+  window.__aichromeLocate = (d) => {
+    const want = String(d?.name || '').toLowerCase();
+    let best = null;
+    let bestScore = 0;
+    const all = [...document.querySelectorAll(d?.tag || '*')];
+    for (const el of all) {
+      const role = roleOf(el) || el.tagName.toLowerCase();
+      if (role !== d.role || !isVisible(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      const name = clean(nameOf(el, role) || '').toLowerCase();
+      let score = 1;
+      if (want && name === want) score += 4;
+      else if (want && name && (name.includes(want) || want.includes(name))) score += 2;
+      else if (want) score -= 1;
+      if (d.id && el.id === d.id) score += 3;
+      if (d.placeholder && el.getAttribute('placeholder') === d.placeholder) score += 2;
+      if (d.href && el.getAttribute('href') === d.href) score += 2;
+      if (r.bottom >= 0 && r.top <= innerHeight) score += 0.5; // prefer the copy on screen
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+    // A bare role match isn't enough when the element had a name or id.
+    if (!best || (bestScore < 2.5 && (want || d.id))) return null;
+    return refFor(best);
+  };
 
   window.__aichromeTree = (filter = 'all', maxDepth = 15, refId = null) => {
     const viewport = { width: window.innerWidth, height: window.innerHeight, scrollX: Math.round(scrollX), scrollY: Math.round(scrollY) };

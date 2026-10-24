@@ -240,19 +240,25 @@ Click the toolbar icon (or press Cmd/Ctrl+Shift+E) to open a chat panel next to 
 Pick the AI from the menu at the top. The panel shows its work as it goes:
 
 - **Thinking:** the AI's reasoning appears in a block you can expand, with how long it thought.
-- **Steps:** each browser action (navigate, click, type, read the page) is a line in a timeline, with its status and timing. Screenshots appear as thumbnails; click one to enlarge it. Expand a step to see its input and output.
+- **Steps:** each browser action is a line in a timeline in plain words ("Click “Sign in” button", "Type “hello” into “Email” field"), with its status and timing, and a one-line summary when the group finishes. A failed step says why right under it. Screenshots appear as thumbnails; click one to enlarge it. Expand a step to see its input and output.
 - **Plans:** when the AI makes a to-do list (Claude's TodoWrite or Codex's plan), it appears as a checklist that updates as the work goes.
 - **Answers:** Markdown with tables, quotes and code blocks; each code block and answer has a copy button.
-- **Permissions:** in "Ask before acting" mode, a card describes the action (for example "Click on ref_12 at example.com") with Allow once, Always allow and Deny.
+- **Permissions:** in "Ask before acting" mode, a card describes the action (for example "Click “Checkout” button", on example.com) with Allow once, Always allow and Deny.
 
 The composer:
 
 - **Images:** paste, drag in, or attach an image, or capture the current tab with the camera button. They are sent to Claude Code or Codex with your message.
-- **Slash commands:** type `/` for `/new`, `/history`, `/settings`, `/screenshot` and your own saved shortcuts (reusable prompts you add in Settings).
+- **Voice:** click the mic and speak; your words appear as you talk and a short pause sends them (Esc cancels). Before sending, a separate small model fixes words the recognizer misheard (for example "cloud code" → "Claude Code"), using the page and the chat for context; the changed words animate in, with *use original* and *edit* for a moment before it sends. It uses Chrome's built-in AI (Gemini Nano) when available, otherwise Ollama or a one-shot Claude Haiku; turn it off in Settings → Voice. The first time, a tab opens to allow the microphone, since a side panel can't ask. Speech recognition is Chrome's, which needs an internet connection.
+- **Keep chatting while it works:** type while the AI is busy and your message is queued above the box (remove it with ×), then sent as soon as the current task finishes; several queued messages go together. **Send now** stops the current task and sends right away; Esc stops it and puts your queued text back in the box.
+- **Slash commands:** type `/` for `/new`, `/history`, `/settings`, `/screenshot`, `/voice`, your saved workflows and your own saved shortcuts (reusable prompts you add in Settings).
 - **Permission mode:** the pill next to Send switches between "Ask before acting" and "Act without asking".
 - **Stop:** press Esc or the Stop button.
 
-**History** (clock icon) lists past chats, grouped by day, with search and delete. **Settings** (gear icon): AI, permission mode, working folder, model, theme (system, light or dark), and saved shortcuts. After installing or updating, run `aichrome install` once so the panel can find `claude` / `codex`.
+**Workflows: do a task once with the AI, then repeat it without the AI.** When the AI finishes a task, click the bookmark under its reply and name it, or type `/save name` to save every browser step in the chat. Type `/name` to replay it: the extension repeats the clicks, typing and navigation itself, so a replay takes seconds and uses no tokens. Each step remembers the element it used by role and name (the "Sign in" button, the "Email" field), not a position, so it still works after the page reloads or moves things around. If a step can't be done (the page changed), the replay stops and **Let the AI finish** hands only the remaining steps to the AI. Reading and screenshots are left out of a workflow, and typed values are replayed as recorded. Manage workflows in Settings.
+
+For tasks that need judgment each time, `/skill name` asks the AI to write a Claude Code skill (`~/.claude/skills/name/SKILL.md`) with the exact steps, so next time it follows the recipe instead of exploring the page.
+
+**History** (clock icon) lists past chats, grouped by day, with search and delete. **Settings** (gear icon): AI, permission mode, working folder, model, theme (system, light or dark), saved workflows and saved shortcuts. After installing or updating, run `aichrome install` once so the panel can find `claude` / `codex`.
 
 ## Use it with AI
 

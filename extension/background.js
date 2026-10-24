@@ -109,11 +109,42 @@ initPanel({
     return true;
   },
   setCurrentTab,
+  runTool,
+  refAt,
+  async locate(target) {
+    const id = await resolveTab();
+    return inPage(id, (d) => window.__aichromeLocate(d), [target]);
+  },
+  async settle() {
+    const id = await resolveTab().catch(() => null);
+    if (id == null) return;
+    for (let i = 0; i < 40 && (await chrome.tabs.get(id).catch(() => null))?.status === 'loading'; i++) await sleep(250);
+  },
 });
+
+// Which element each ref pointed at when the AI used it, so a saved workflow can find it again later.
+const REF_TOOLS = new Set(['computer', 'form_input', 'file_upload']);
+const refLog = []; // { ref, target, ts }
+
+async function noteRef(name, args) {
+  if (!REF_TOOLS.has(name) || !args?.ref) return;
+  const id = await resolveTab(args.tabId).catch(() => null);
+  const target = id == null ? null : await inPage(id, (r) => window.__aichromeDescribe(r), [args.ref]).catch(() => null);
+  if (!target) return;
+  refLog.push({ ref: args.ref, target, ts: Date.now() });
+  if (refLog.length > 500) refLog.splice(0, refLog.length - 500);
+}
+
+// The target behind `ref` for a tool call shown in the chat at `ts` (the call runs a moment after it is shown).
+function refAt(ref, ts) {
+  const same = refLog.filter((e) => e.ref === ref);
+  return (same.find((e) => e.ts >= ts - 5000) || same.filter((e) => e.ts < ts).pop())?.target || null;
+}
 
 async function runTool(name, args) {
   const fn = TOOLS[name];
   if (!fn) throw new Error(`Unknown tool "${name}". Available: ${Object.keys(TOOLS).join(', ')}`);
+  await noteRef(name, args);
   const mirror = onToolCall(name, args); // shows a terminal AI's activity in the side panel
   if (!mirror) return runRecorded(name, fn, args);
   try {
@@ -1039,7 +1070,7 @@ async function inPage(tabId, func, args) {
     if (result !== undefined && result !== null) return result;
   } catch (e) {
     const msg = String(e?.message || e);
-    if (!/__aichrome(Tree|Ref) is not a function/.test(msg)) throw new Error(msg.replace(/^Error: /, ''));
+    if (!/__aichrome(Tree|Ref|Describe|Locate) is not a function/.test(msg)) throw new Error(msg.replace(/^Error: /, ''));
   }
   // Our content scripts are missing (page opened before the extension loaded, or orphaned by a reload).
   const [{ result: ready } = {}] = await exec({ func: () => typeof window.__aichromeTree === 'function' });

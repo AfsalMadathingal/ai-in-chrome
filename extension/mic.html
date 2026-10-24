@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI in Chrome · Microphone</title>
+  <style>
+    :root { --bg: #faf9f5; --surface: #fff; --text: #1f1e1d; --muted: #73726c; --line: rgba(31, 30, 29, .11); --accent: #c96442; --ok: #2f7d4f; --bad: #b3261e; color-scheme: light dark; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #262624; --surface: #30302e; --text: #f5f4ef; --muted: #a6a39b; --line: rgba(245, 244, 239, .1); --accent: #d97757; --ok: #5fbf85; --bad: #f28b82; } }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--bg); color: var(--text); font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .card { max-width: 420px; margin: 16px; padding: 28px; text-align: center; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; }
+    img { width: 48px; height: 48px; }
+    h1 { font: 400 22px/1.3 ui-serif, Georgia, serif; margin: 12px 0 6px; }
+    p { margin: 0; color: var(--muted); }
+    .ok { color: var(--ok); } .bad { color: var(--bad); }
+    button { margin-top: 16px; font: inherit; padding: 7px 16px; border-radius: 9px; border: 0; background: var(--accent); color: #fff; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <img src="icons/icon-128.png" alt="" />
+    <h1>Allow the microphone</h1>
+    <p id="msg">Chrome will ask once so you can talk to AI in Chrome from the side panel. Click <b>Allow</b>.</p>
+    <button id="retry" hidden>Try again</button>
+  </div>
+  <script src="mic.js"></script>
+</body>
+</html>
