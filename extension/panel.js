@@ -43,7 +43,7 @@ function persist(sid) {
     if (!ev.image) return ev;
     return ++images <= KEEP_IMAGES ? ev : { ...ev, image: undefined };
   }).reverse();
-  chrome.storage.local.set({ [`chat:${sid}`]: { events, sessionId: c.sessionId, kind: c.kind, parent: c.parent, agent: c.agent, url: c.url } });
+  chrome.storage.local.set({ [`chat:${sid}`]: { events, sessionId: c.sessionId, kind: c.kind, parent: c.parent, agent: c.agent, url: c.url, bgTasks: c.bgTasks } });
 }
 
 // ---------- chat list (history drawer) ----------
@@ -113,7 +113,8 @@ export async function emit(sid, ev) {
 
 // Events from the native host (headless Claude Code / Codex).
 export function onAgentEvent(sid, ev) {
-  if (ev.t === 'voice_fixed') return broadcast(sid, { type: 'voice_fixed', id: ev.id, text: ev.text }); // not part of the chat
+  // Side results, not part of the chat.
+  if (ev.t === 'voice_fixed' || ev.t === 'suggested') return broadcast(sid, { type: ev.t, id: ev.id, text: ev.text });
   emit(sid, ev);
 }
 
@@ -141,6 +142,7 @@ chrome.runtime.onConnect.addListener((port) => {
       else if (msg.type === 'stop') stop(msg.sid, { restore: true });
       else if (msg.type === 'send_now') stop(msg.sid);
       else if (msg.type === 'voice_fix' && !deps.hostSend({ ...msg, type: 'agent_voice_fix' })) port.postMessage({ type: 'voice_fixed', id: msg.id, text: null });
+      else if (msg.type === 'suggest' && !deps.hostSend({ ...msg, type: 'agent_suggest' })) port.postMessage({ type: 'suggested', id: msg.id, text: null });
       else if (msg.type === 'unqueue') {
         const c = await chat(msg.sid);
         c.queue = (c.queue || []).filter((q) => q.id !== msg.id);
@@ -211,7 +213,10 @@ async function send(msg) {
   await emit(sid, { t: 'user', text, tab: line, thumbs: thumbs.length ? thumbs : undefined });
   const index = await chatIndex();
   await touchChat(sid, { title: index[sid]?.title || text.replace(/\s+/g, ' ').slice(0, 80) || 'Image', kind });
-  const full = `${line}\n${text}`;
+  // What the AI gets but the chat doesn't show: news from @agent tasks, and a nudge for the suggested reply.
+  const notes = c.parent ? '' : bgNotes(c);
+  const nudge = kind === 'terminal' ? '' : '\n\n<reminder>End your reply with <suggest>…</suggest> (the user\'s likely next message).</reminder>';
+  const full = `${notes}${line}\n${text}${nudge}`;
 
   if (kind === 'terminal') {
     await emit(sid, { t: 'busy', on: true });
@@ -528,6 +533,8 @@ async function startBackground({ sid, agent, text, tabId, cwd, mode, model, olla
     ? `${text}\n\nThis runs in the background. When you're done, end with a short summary of the result.`
     : `Use the "${agent}" subagent for this task. When it's done, reply with a short summary of what it found or did.\n\n${text}`;
   await emit(sid, { t: 'bg_task', bg, agent, text });
+  const parent = await chat(sid);
+  (parent.bgTasks ||= []).push({ bg, agent, text, status: 'running', told: '' });
   await touchChat(bg, { title: `@${agent}: ${text.replace(/\s+/g, ' ').slice(0, 70)}`, kind: runKind });
   // The panel's model setting belongs to the AI picked in the panel; another AI uses its default.
   await send({ sid: bg, kind: runKind, text: prompt, cwd, mode, model: runKind === kind ? model : '', ollamaUrl });
@@ -542,9 +549,30 @@ function bgProgress(sid, c, ev) {
   if (ev.t === 'done' || ev.t === 'error' || ev.t === 'stopped') {
     const text = [...c.events].reverse().find((e) => e.t === 'text' && !e.parent)?.text || '';
     const steps = c.events.filter((e) => e.t === 'tool' && !e.parent).length;
+    const task = chats.get(c.parent)?.bgTasks?.find((x) => x.bg === sid);
+    if (task) Object.assign(task, { status: ev.t === 'done' && !ev.error ? 'done' : ev.t, result: (ev.t === 'error' ? ev.message : ev.error || text).replace(/\s*<suggest>[\s\S]*?<\/suggest>/g, '') });
     emit(c.parent, {
       t: 'bg_done', bg: sid, agent: c.agent, ok: ev.t === 'done' && !ev.error, steps, ms: ev.ms, tokens: ev.tokens,
       text: ev.t === 'stopped' ? 'Stopped.' : ev.t === 'error' ? ev.message : ev.error || text,
     });
   }
+}
+
+// The chat's AI doesn't see @agent tasks on its own: tell it about each one once when it starts and once
+// with the result, at the top of the next message the user sends.
+function bgNotes(c) {
+  const lines = [];
+  for (const t of c.bgTasks || []) {
+    if (t.status === 'running' && !t.told) {
+      lines.push(`- @${t.agent} is still working on: ${t.text}`);
+      t.told = 'start';
+    } else if (t.status !== 'running' && t.told !== 'end') {
+      const what = t.status === 'done' ? 'finished' : t.status === 'stopped' ? 'was stopped' : 'failed';
+      lines.push(`- @${t.agent} ${what}. Task: ${t.text}\n  Result:\n${String(t.result || '(no result)').slice(0, 6000).replace(/^/gm, '    ')}`);
+      t.told = 'end';
+    }
+  }
+  return lines.length
+    ? `<background-tasks>\nThe user ran these tasks in the background with @agent from the side panel; their results are yours to use:\n${lines.join('\n')}\n</background-tasks>\n\n`
+    : '';
 }

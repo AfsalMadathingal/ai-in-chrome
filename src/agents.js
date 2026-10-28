@@ -38,6 +38,9 @@ function listSubagents(cwd) {
   return [...found.values()].sort((a, b) => a.name.localeCompare(b.name));
 }
 
+const SUGGEST_PROMPT = `Given the last exchange in a chat with an AI that controls the user's web browser, write the message the user is most likely to send next, as the user, under 12 words.
+Reply with only that message, no quotes. If nothing useful fits, reply with nothing.`;
+
 const VOICE_FIX_PROMPT = `You fix speech-to-text transcripts. The user dictated a message to an AI assistant that controls their web browser.
 Correct words the speech recognizer most likely misheard: names, product and technical terms, words from the page they are on, homophones, split or merged words. Fix punctuation and capitalization.
 Keep their meaning, wording and language. Do not answer, explain, translate, or add anything. If it is already right, return it unchanged.
@@ -135,6 +138,7 @@ export class Agents {
       if (msg.type === 'agent_stop') return this.stop(sid);
       if (msg.type === 'agent_reset') return this.reset(sid);
       if (msg.type === 'agent_voice_fix') return this.voiceFix(msg);
+      if (msg.type === 'agent_suggest') return this.suggest(msg);
     } catch (e) {
       this.emit(sid, { t: 'error', message: e.message });
       this.emit(sid, { t: 'busy', on: false });
@@ -204,35 +208,48 @@ export class Agents {
 
   // ---------- voice: a separate quick model call that fixes words speech recognition misheard ----------
   // Ollama when the chat uses it (local, fast), otherwise a one-shot Claude Haiku with no tools.
-  async voiceFix({ sid, id, text, context = '', kind, model, ollamaUrl }) {
-    const done = (fixed) => this.emit(sid, { t: 'voice_fixed', id, text: fixed });
+  voiceFix({ sid, id, text, context = '', kind, model, ollamaUrl }) {
     const user = `${context ? `${context}\n\n` : ''}Transcript: ${text}`;
+    return this.quick(VOICE_FIX_PROMPT, user, { kind, model, ollamaUrl }).then((fixed) => this.emit(sid, { t: 'voice_fixed', id, text: fixed }));
+  }
+
+  // The likely next message, when the chat's AI didn't end its answer with one.
+  suggest({ sid, id, question = '', answer = '', kind, model, ollamaUrl }) {
+    const user = `User: ${question.slice(0, 1500)}\n\nAssistant: ${answer.slice(-3000)}`;
+    return this.quick(SUGGEST_PROMPT, user, { kind, model, ollamaUrl }).then((text) => this.emit(sid, { t: 'suggested', id, text }));
+  }
+
+  // One small, tool-less model call: Ollama when the chat uses it, otherwise a one-shot Claude Haiku. null on failure.
+  async quick(system, user, { kind, model, ollamaUrl }) {
     try {
       if (kind === 'ollama' && model) {
         const res = await fetch(`${(ollamaUrl || OLLAMA_URL).replace(/\/+$/, '')}/api/chat`, {
           method: 'POST',
           signal: AbortSignal.timeout(15000),
-          body: JSON.stringify({ model, stream: false, think: false, messages: [{ role: 'system', content: VOICE_FIX_PROMPT }, { role: 'user', content: user }], options: { temperature: 0 } }),
+          body: JSON.stringify({ model, stream: false, think: false, messages: [{ role: 'system', content: system }, { role: 'user', content: user }], options: { temperature: 0 } }),
         });
-        return done((await res.json()).message?.content || null);
+        return (await res.json()).message?.content || null;
       }
       const bin = which('claude');
-      if (!bin) return done(null);
-      const proc = launch(bin, ['-p', '--model', 'haiku', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'text', '--system-prompt', VOICE_FIX_PROMPT], {
-        cwd: os.homedir(), env: process.env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true,
-      });
-      let out = '';
-      const timer = setTimeout(() => proc.kill(), 15000);
-      proc.stdout.on('data', (d) => (out += d));
-      proc.stdin.on('error', () => {});
-      proc.stdin.end(user);
-      proc.on('exit', (code) => {
-        clearTimeout(timer);
-        done(code === 0 ? out.trim() : null);
+      if (!bin) return null;
+      return await new Promise((resolve) => {
+        const proc = launch(bin, ['-p', '--model', 'haiku', '--tools', '', '--strict-mcp-config', '--no-session-persistence', '--output-format', 'text', '--system-prompt', system], {
+          cwd: os.homedir(), env: process.env, stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true,
+        });
+        let out = '';
+        const timer = setTimeout(() => proc.kill(), 15000);
+        proc.stdout.on('data', (d) => (out += d));
+        proc.stdin.on('error', () => {});
+        proc.stdin.end(user);
+        proc.on('error', () => resolve(null));
+        proc.on('exit', (code) => {
+          clearTimeout(timer);
+          resolve(code === 0 ? out.trim() : null);
+        });
       });
     } catch (e) {
-      this.log('voice fix failed', e.message);
-      done(null);
+      this.log('quick model call failed', e.message);
+      return null;
     }
   }
 

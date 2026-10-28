@@ -660,7 +660,12 @@ function renderDone(ev) {
   const canSave = !ev.replay && t?.querySelector('.step');
   const meta = el('div', 'turn-meta', `<span class="ok">${icon(ev.replay ? 'play' : 'check')}</span><span>${esc(bits.join(' · '))}</span><span class="acts"><button class="mini" data-a="copy" title="Copy answer">${icon('copy')}</button>${canSave ? `<button class="mini" data-a="save" title="Save these steps as a workflow you can replay without the AI">${icon('bookmark')}</button>` : ''}</span>`);
   meta.querySelector('[data-a="copy"]').addEventListener('click', () => copy([...(t || log).querySelectorAll(':scope > .md')].map((m) => visible(m.raw)).filter(Boolean).join('\n\n')));
-  if (!ev.replay) setSuggestion(suggestionIn([...(t || log).querySelectorAll(':scope > .md')].map((m) => m.raw).pop()));
+  if (!ev.replay && !ev.error) {
+    const answer = [...(t || log).querySelectorAll(':scope > .md')].map((m) => m.raw).filter(Boolean);
+    const own = suggestionIn(answer[answer.length - 1]);
+    if (own) setSuggestion(own);
+    else if (answer.length) suggestNext(answer.map(visible).join('\n\n'));
+  }
   meta.querySelector('[data-a="save"]')?.addEventListener('click', () => askWorkflowName(meta, t.since));
   add(meta, t || log);
 }
@@ -1176,6 +1181,7 @@ function finishBgTask(ev) {
     }
   }
   if (!replaying && nearBottom()) scrollDown();
+  if (!replaying && ev.ok && !busy) setSuggestion(`Use what @${ev.agent} found`);
 }
 
 function runSlash(i) {
@@ -1365,27 +1371,32 @@ function voiceContext() {
 
 // Chrome's built-in model (Gemini Nano) runs on this computer: fast and free. Otherwise the native host
 // asks Ollama or a one-shot Claude Haiku.
-let nano = null;
-async function fixWithChrome(text, context) {
+// undefined when Chrome's model isn't available here.
+const nano = new Map(); // system prompt -> session
+async function chromeModel(system, prompt) {
   if (!self.LanguageModel || (await LanguageModel.availability().catch(() => 'unavailable')) !== 'available') return undefined;
-  nano ||= LanguageModel.create({ initialPrompts: [{ role: 'system', content: VOICE_FIX_PROMPT }] });
-  const s = await (await nano).clone();
+  if (!nano.has(system)) nano.set(system, LanguageModel.create({ initialPrompts: [{ role: 'system', content: system }] }));
+  const s = await (await nano.get(system)).clone();
   try {
-    return await s.prompt(`${context ? `${context}\n\n` : ''}Transcript: ${text}`);
+    return await s.prompt(prompt);
   } finally {
     s.destroy();
   }
 }
 
-const fixWaits = new Map(); // id -> resolve
-function fixWithHost(text, context) {
-  const id = `v${Date.now()}`;
-  port?.postMessage({ type: 'voice_fix', sid, id, text, context, kind: settings.agent, model: currentModel(), ollamaUrl: settings.ollamaUrl });
+const fixWithChrome = (text, context) => chromeModel(VOICE_FIX_PROMPT, `${context ? `${context}\n\n` : ''}Transcript: ${text}`);
+
+// A quick side call through the native host (Ollama or one-shot Claude Haiku); resolves null on failure.
+const hostWaits = new Map(); // id -> resolve
+function hostQuick(type, payload) {
+  const id = `${type}${Date.now()}`;
+  port?.postMessage({ type, sid, id, ...payload, kind: settings.agent, model: currentModel(), ollamaUrl: settings.ollamaUrl });
   return new Promise((resolve) => {
-    fixWaits.set(id, resolve);
-    setTimeout(() => fixWaits.delete(id) && resolve(null), 16000);
+    hostWaits.set(id, resolve);
+    setTimeout(() => hostWaits.delete(id) && resolve(null), 16000);
   });
 }
+const fixWithHost = (text, context) => hostQuick('voice_fix', { text, context });
 
 // Model output that is clearly not a corrected transcript (an answer, a refusal, an essay) is ignored.
 function sane(original, fixed) {
@@ -1553,9 +1564,9 @@ function connect() {
       renderAgentUI();
     } else if (msg.type === 'bg_update') {
       updateBgTask(msg);
-    } else if (msg.type === 'voice_fixed') {
-      fixWaits.get(msg.id)?.(msg.text);
-      fixWaits.delete(msg.id);
+    } else if (msg.type === 'voice_fixed' || msg.type === 'suggested') {
+      hostWaits.get(msg.id)?.(msg.text);
+      hostWaits.delete(msg.id);
     } else if (msg.type === 'queue') {
       if (msg.sid !== sid) return;
       renderQueue(msg.items || []);
@@ -1626,6 +1637,24 @@ function autosize() {
 }
 
 // ---------- suggested reply: shown in the empty box, Tab puts it in ----------
+
+const SUGGEST_PROMPT = 'Given the last exchange in a chat with an AI that controls the user\'s web browser, write the message the user is most likely to send next, ' +
+  'as the user, under 12 words. Reply with only that message, no quotes. If nothing useful fits, reply with nothing.';
+
+// The chat's AI was asked to end its answer with a suggestion; when it doesn't, a small side model writes one.
+async function suggestNext(answer) {
+  const at = lastUserTs;
+  const question = [...log.querySelectorAll('.msg-user .bubble')].pop()?.textContent || '';
+  const prompt = `User: ${clip(question, 1500)}\n\nAssistant: ${answer.slice(-3000)}`;
+  let text;
+  try {
+    text = await chromeModel(SUGGEST_PROMPT, prompt);
+  } catch {}
+  if (text === undefined) text = await hostQuick('suggest', { question, answer });
+  text = String(text || '').split('\n')[0].replace(/^["“']|["”']$/g, '').trim();
+  if (at !== lastUserTs || !text || text.length > 140) return; // the chat moved on, or not a usable reply
+  setSuggestion(text);
+}
 
 let suggestion = '';
 
