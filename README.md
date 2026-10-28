@@ -245,7 +245,7 @@ Pick the AI from the menu at the top. The panel shows its work as it goes:
 - **Answers:** Markdown with tables, quotes and code blocks; each code block and answer has a copy button.
 - **Permissions:** in "Ask before acting" mode, a card describes the action (for example "Click “Checkout” button", on example.com) with Allow once, Always allow and Deny. "Act without asking" covers browser actions and web search/fetch; shell commands and file changes still ask.
 - **Subagents:** when Claude hands work to a subagent, its step shows what the subagent is doing live; click it to see every step and message the subagent produced.
-- **Suggested reply:** each answer ends with the reply you're most likely to send next, shown in the empty box; press Tab (or click it) to use it. The chat's AI writes it as part of its answer (no extra call); if it leaves it out, a quick side model (Chrome's built-in AI, Ollama or Claude Haiku) writes one.
+- **Suggested reply:** each answer ends with the reply you're most likely to send next, shown in the empty box; press Tab to use it; clicking the box just puts the cursor there. The chat's AI writes it as part of its answer (no extra call); if it leaves it out, a quick side model (Chrome's built-in AI, Ollama or Claude Haiku) writes one.
 
 The composer:
 

@@ -834,7 +834,7 @@ function setBusy(on) {
 function updateStatus() {
   const st = $('status');
   if (voice) {
-    st.innerHTML = `<span class="rec"></span><span class="verb">${voice.heard || voice.interim ? 'Listening' : 'Listening… start speaking'}</span><span class="esc">pause to send · <kbd>Esc</kbd> to cancel</span>`;
+    st.innerHTML = `<span class="rec"></span><span class="verb">${voiceStage()}</span><span class="esc">pause to send · <kbd>Esc</kbd> to cancel</span>`;
   } else if (busy) {
     const running = [...log.querySelectorAll('.step.run')].pop();
     const verb = running ? running.verb : thinkEl ? 'Thinking' : streamEl ? 'Writing' : 'Working';
@@ -1255,7 +1255,23 @@ function renderAttachments() {
 
 // Chrome's speech recognition. A side panel can't show the microphone prompt, so the first time we ask from a tab (mic.html).
 const Recognition = self.SpeechRecognition || self.webkitSpeechRecognition;
-let voice = null; // { rec, base, heard, interim, send, timer }
+let voice = null; // { rec, base, heard, interim, send, timer, stage, quiet }
+
+// How far the audio got (start → mic → sound → speech), so "nothing happened" can say where it stopped.
+function voiceStage() {
+  const v = voice;
+  if (v.heard || v.interim) return 'Listening';
+  if (v.stage === 'start') return 'Starting the microphone…';
+  if (v.quiet && v.stage === 'mic') return 'No sound from the microphone yet';
+  if (v.quiet) return 'Hearing you, waiting for words…';
+  return 'Listening… start speaking';
+}
+
+function voiceTrouble(v) {
+  if (v.stage === 'start') return 'The microphone didn’t start. Another app may be using it.';
+  if (v.stage === 'mic') return 'No sound reached Chrome. Check the input in System Settings › Sound, and Chrome’s microphone setting.';
+  return 'Chrome heard sound but its speech service sent back no words. Restarting Chrome usually fixes this.';
+}
 
 async function micState() {
   try {
@@ -1286,10 +1302,26 @@ function startVoice() {
   rec.continuous = true;
   rec.interimResults = true;
   const base = input.value.trim();
-  voice = { rec, base: base ? `${base} ` : '', heard: '', interim: '', send: true };
+  voice = { rec, base: base ? `${base} ` : '', heard: '', interim: '', send: true, stage: 'start' };
   const v = voice;
+  const stage = (s) => () => {
+    v.stage = s;
+    v.quiet = false;
+    clearTimeout(v.quietTimer);
+    // Still nothing a few seconds into this stage: say so while it keeps listening.
+    v.quietTimer = setTimeout(() => {
+      v.quiet = true;
+      if (voice === v) updateStatus();
+    }, 4000);
+    if (voice === v) updateStatus();
+  };
+  rec.onstart = stage('start');
+  rec.onaudiostart = stage('mic');
+  rec.onsoundstart = stage('sound');
+  rec.onspeechstart = stage('speech');
   rec.onresult = (e) => {
     v.interim = '';
+    clearTimeout(v.quietTimer);
     for (let i = e.resultIndex; i < e.results.length; i++) {
       if (e.results[i].isFinal) v.heard += e.results[i][0].transcript;
       else v.interim += e.results[i][0].transcript;
@@ -1303,14 +1335,19 @@ function startVoice() {
   };
   rec.onerror = (e) => {
     v.send = false;
-    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') askMic();
-    else if (e.error === 'no-speech') toast('Didn’t hear anything');
+    if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+      // With the microphone already allowed, asking again would just loop: it's Chrome's speech service saying no.
+      micState().then((s) => (s === 'granted' ? toast('Chrome refused speech recognition here. Restarting Chrome usually fixes this.', 4500) : askMic()));
+    } else if (e.error === 'no-speech') toast(v.stage === 'mic' ? voiceTrouble(v) : 'Didn’t hear anything', 4500);
     else if (e.error === 'network') toast('Voice input needs an internet connection');
     else if (e.error === 'audio-capture') toast('No microphone found');
     else if (e.error !== 'aborted') toast(`Voice input stopped: ${e.error}`);
   };
   rec.onend = () => {
     clearTimeout(v.timer);
+    clearTimeout(v.quietTimer);
+    // No words came back and no error said why (a quick click on and off isn't trouble).
+    if (v.send && !v.heard.trim() && !v.interim && (v.quiet || v.stage === 'speech')) toast(voiceTrouble(v), 4500);
     if (voice === v) voice = null;
     const text = (v.base + v.heard).trim();
     if (!v.typed) input.value = text;
@@ -1802,11 +1839,6 @@ async function init() {
   });
   $('shotBtn').addEventListener('click', attachScreenshot);
   $('micBtn').addEventListener('click', toggleVoice);
-  $('ghost').addEventListener('mousedown', (e) => {
-    e.preventDefault();
-    takeSuggestion();
-    input.focus();
-  });
   $('micBtn').hidden = !Recognition;
 
   // drag & drop

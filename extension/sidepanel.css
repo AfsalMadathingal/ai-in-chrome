@@ -374,10 +374,9 @@ footer { position: relative; padding: 4px 12px 12px; background: var(--bg); }
 .composer textarea { display: block; width: 100%; border: 0; outline: 0; background: none; resize: none; max-height: 200px; padding: 3px 0 6px; line-height: 1.5; }
 .composer textarea::placeholder { color: var(--faint); }
 .composer { position: relative; }
-.ghost { position: absolute; left: 12px; right: 12px; top: 11px; display: flex; align-items: center; gap: 8px; color: var(--faint); cursor: pointer; animation: fadein .35s ease-out; line-height: 1.5; }
+.ghost { position: absolute; left: 12px; right: 12px; top: 11px; display: flex; align-items: center; gap: 8px; color: var(--faint); pointer-events: none; animation: fadein .35s ease-out; line-height: 1.5; }
 .ghost .gt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ghost kbd { flex: none; font-size: 10.5px; border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; background: var(--sunken); color: var(--muted); }
-.ghost:hover .gt { color: var(--muted); }
 .composer.has-ghost textarea::placeholder { color: transparent; }
 .attachments { display: flex; gap: 6px; flex-wrap: wrap; padding: 2px 0 8px; }
 .att { position: relative; width: 58px; height: 46px; border-radius: 8px; overflow: hidden; border: 1px solid var(--line); }
