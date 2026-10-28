@@ -6,7 +6,7 @@ import {
   initNetwork, onNetworkEvent, onNetworkAttach, onNetworkTabRemoved,
   read_network_requests, network_request, network_intercept, network_export, cookies, __http, __tab_url,
 } from './network.js';
-import { initPanel, onAgentEvent, onToolCall, approve_action, sidepanel_wait, sidepanel_reply } from './panel.js';
+import { initPanel, onAgentEvent, onToolCall, approve_action, sidepanel_wait, sidepanel_reply, bgInfo } from './panel.js';
 
 const HOST_NAME = 'com.ai_in_chrome.bridge';
 const GROUP_TITLE = 'AI';
@@ -141,7 +141,41 @@ function refAt(ref, ts) {
   return (same.find((e) => e.ts >= ts - 5000) || same.filter((e) => e.ts < ts).pop())?.target || null;
 }
 
+// Background @agent tasks each get their own tab, so they never take over the tab you are using.
+const bgTabs = new Map(); // chat sid -> tab id
+
+async function bgTab(sid) {
+  const known = bgTabs.get(sid);
+  if (known != null && (await chrome.tabs.get(known).catch(() => null))) return known;
+  const tab = await chrome.tabs.create({ url: bgInfo(sid)?.url || 'about:blank', active: false });
+  await addToGroup(tab.id);
+  bgTabs.set(sid, tab.id);
+  for (let i = 0; i < 60 && (await chrome.tabs.get(tab.id).catch(() => null))?.status === 'loading'; i++) await sleep(250);
+  return tab.id;
+}
+
 async function runTool(name, args) {
+  const { __sid: sid, ...rest } = args || {};
+  if (bgInfo(sid)) return runBackgroundTool(sid, name, rest);
+  return runToolNow(name, rest);
+}
+
+async function runBackgroundTool(sid, name, args) {
+  if (args.tabId == null && name !== 'tabs_context' && name !== 'tabs_create') args.tabId = await bgTab(sid);
+  if (name !== 'tabs_create' && name !== 'tabs_select') return runToolNow(name, args);
+  // These move the "current tab"; keep that with the background task, not the panel's tab.
+  const before = currentTab;
+  try {
+    return await runToolNow(name, args);
+  } finally {
+    if (currentTab !== before) {
+      bgTabs.set(sid, currentTab);
+      setCurrentTab(before);
+    }
+  }
+}
+
+async function runToolNow(name, args) {
   const fn = TOOLS[name];
   if (!fn) throw new Error(`Unknown tool "${name}". Available: ${Object.keys(TOOLS).join(', ')}`);
   await noteRef(name, args);

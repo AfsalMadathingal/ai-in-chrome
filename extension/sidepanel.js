@@ -226,7 +226,16 @@ function blocks(text) {
   return out.join('');
 }
 
+// The AI ends replies with <suggest>next message</suggest>: hidden here, offered in the composer instead.
+const SUGGEST = /\s*<suggest>([\s\S]*?)(?:<\/suggest>|$)/g;
+const visible = (s) => String(s ?? '').replace(SUGGEST, '').replace(/\s*<(?:s(?:u(?:g(?:g(?:e(?:st?)?)?)?)?)?)?$/, '');
+const suggestionIn = (s) => {
+  const m = [...String(s ?? '').matchAll(/<suggest>([\s\S]*?)<\/suggest>/g)].pop();
+  return m ? m[1].replace(/\s+/g, ' ').trim().slice(0, 200) : '';
+};
+
 function markdown(src) {
+  src = visible(src);
   const out = [];
   const parts = String(src).split(/^[ \t]*```([^\n`]*)\n?([\s\S]*?)(?:^[ \t]*```[ \t]*$|$(?![\s\S]))/m);
   for (let i = 0; i < parts.length; i += 3) {
@@ -350,7 +359,7 @@ function describe(name, inputStr) {
     case 'LS': return { label: `List ${c(o.path || '')}`, verb: 'Listing files', icon: 'folder', done: 'listed files' };
     case 'WebFetch': return { label: `Fetch ${c(hostOf(o.url || ''))}`, verb: 'Fetching a page', icon: 'link', done: 'fetched a page' };
     case 'WebSearch': case 'web_search': return { label: `Search the web for ${q(o.query || raw)}`, verb: 'Searching the web', icon: 'search', done: 'searched the web' };
-    case 'Task': case 'Agent': return { label: `Hand off: ${esc(clip(o.description || o.prompt || '', 50))}`, verb: 'Working with a helper', icon: 'bot', done: 'used a helper' };
+    case 'Task': case 'Agent': return { label: `Subagent: ${esc(clip(o.description || o.prompt || '', 50))}`, verb: 'Subagent working', icon: 'bot', done: 'used a subagent' };
     case 'TodoWrite': return { label: 'Update the plan', verb: 'Planning', icon: 'list', done: 'updated the plan' };
     case 'sidepanel_reply': return { label: 'Reply', verb: 'Writing', icon: 'spark', done: 'replied' };
     default: {
@@ -419,7 +428,7 @@ function closeTurn(ts) {
 }
 
 function updateSteps(g) {
-  const all = [...g.querySelectorAll('.step')];
+  const all = [...g.querySelectorAll('.step:not(.sub)')];
   const running = all.filter((s) => s.classList.contains('run')).length;
   const failed = all.filter((s) => s.classList.contains('bad')).length;
   const last = all[all.length - 1];
@@ -433,7 +442,61 @@ function updateSteps(g) {
   g.querySelector('.gdur').textContent = !running && first ? fmtMs(end - first) : '';
 }
 
+function makeStep(ev, cls) {
+  const d = describe(ev.name, ev.input);
+  const s = el('div', `step run${cls ? ` ${cls}` : ''}`);
+  s.start = ev.ts;
+  s.verb = d.verb;
+  s.done = d.done;
+  s.innerHTML = `<button class="step-row" title="Show details"><span class="si">${icon(d.icon)}</span><span class="lbl">${d.label}</span><span class="dur"></span><span class="st"><span class="spin"></span></span></button>
+    ${fold(`<div class="step-detail"><div class="k">Tool · ${esc(strip(ev.name))}</div><pre class="in"></pre></div>`)}`;
+  s.querySelector('.in').textContent = pretty(ev.input);
+  s.querySelector('.step-row').addEventListener('click', () => s.classList.toggle('open'));
+  stepEls.set(ev.id, s);
+  return s;
+}
+
+// A subagent's own work, nested under its Agent step: a live line while it runs, the full list when opened.
+function subBox(parent) {
+  let box = parent.querySelector(':scope > .fold .subs');
+  if (!box) {
+    box = el('div', 'subs');
+    parent.querySelector(':scope > .fold > div').prepend(box);
+    parent.querySelector(':scope > .step-row').insertAdjacentElement('afterend', el('div', 'live'));
+    parent.querySelector('.step-row').title = 'Show what the subagent did';
+  }
+  return box;
+}
+
+function updateSub(parent) {
+  const subs = [...parent.querySelectorAll(':scope > .fold .subs > .step')];
+  const live = parent.querySelector(':scope > .live');
+  const running = parent.classList.contains('run');
+  const cur = subs.filter((x) => x.classList.contains('run')).pop() || subs[subs.length - 1];
+  live.innerHTML = `${running && cur ? `<span class="shimmer">${cur.querySelector('.lbl').innerHTML}</span> · ` : ''}${subs.length} step${subs.length === 1 ? '' : 's'}${running ? '' : ' · click to see them'}`;
+}
+
+function addSubStep(ev) {
+  const parent = stepEls.get(ev.parent);
+  if (!parent) return;
+  const s = makeStep(ev, 'sub');
+  s.parentStep = parent;
+  subBox(parent).appendChild(s);
+  updateSub(parent);
+  updateStatus();
+}
+
+function addSubText(ev) {
+  const parent = stepEls.get(ev.parent);
+  if (!parent) return;
+  const m = el('div', 'md subtext', markdown(clip(ev.text, 600)));
+  m.raw = ev.text;
+  subBox(parent).appendChild(m);
+  updateSub(parent);
+}
+
 function addStep(ev) {
+  if (ev.parent) return addSubStep(ev);
   ensureTurn();
   closeThink(ev.ts);
   closeStream();
@@ -446,16 +509,7 @@ function addStep(ev) {
       g.classList.toggle('open');
     });
   }
-  const d = describe(ev.name, ev.input);
-  const s = el('div', 'step run');
-  s.start = ev.ts;
-  s.verb = d.verb;
-  s.done = d.done;
-  s.innerHTML = `<button class="step-row" title="Show details"><span class="si">${icon(d.icon)}</span><span class="lbl">${d.label}</span><span class="dur"></span><span class="st"><span class="spin"></span></span></button>
-    ${fold(`<div class="step-detail"><div class="k">Tool · ${esc(strip(ev.name))}</div><pre class="in"></pre></div>`)}`;
-  s.querySelector('.in').textContent = pretty(ev.input);
-  s.querySelector('.step-row').addEventListener('click', () => s.classList.toggle('open'));
-  stepEls.set(ev.id, s);
+  const s = makeStep(ev);
   steps.querySelector('.steps-list').appendChild(s);
   updateSteps(steps);
   if (!replaying && nearBottom()) scrollDown();
@@ -484,6 +538,8 @@ function finishStep(ev) {
     img.dataset.zoom = '';
     s.appendChild(img);
   }
+  if (s.parentStep) updateSub(s.parentStep);
+  if (s.querySelector(':scope > .live')) updateSub(s);
   updateSteps(s.closest('.steps'));
   updateStatus();
 }
@@ -572,9 +628,11 @@ function renderPermission(ev) {
   closeThink(ev.ts);
   closeStream();
   const d = describe(ev.tool, ev.input);
-  const where = ev.key && ev.key.includes(':') && /\./.test(ev.key) ? ev.key.split(':').slice(1).join(':') : currentHost;
+  // Only browser actions happen "on" a site; web search, shell and file tools don't.
+  const browserTool = ev.browser ?? !/^[A-Z]/.test(ev.tool || '');
+  const where = ev.key && ev.key.includes(':') && /\./.test(ev.key) ? ev.key.split(':').slice(1).join(':') : browserTool ? currentHost : '';
   const card = add(el('div', 'perm'), turn);
-  card.innerHTML = `<div class="q"><span class="si">${icon(d.icon)}</span><div><b>${d.label}</b><small>Allow this${where ? ` on ${esc(where)}` : ''}?</small></div></div>
+  card.innerHTML = `<div class="q"><span class="si">${icon(d.icon)}</span><div><b>${d.label}</b><small>${ev.agent ? `@${esc(ev.agent)} (background) wants to do this. ` : ''}Allow this${where ? ` on ${esc(where)}` : ''}?</small></div></div>
     <details><summary>Show exact request</summary><pre></pre></details>
     <div class="btns"><button class="btn primary" data-d="allow">Allow once</button><button class="btn" data-d="always">Always allow</button><button class="btn" data-d="deny">Deny</button></div>`;
   card.querySelector('pre').textContent = pretty(ev.input);
@@ -601,7 +659,8 @@ function renderDone(ev) {
     : [ev.ms && fmtMs(ev.ms), ev.turns > 1 && `${ev.turns} turns`, ev.tokens && `${fmtTokens(ev.tokens)} tokens`, ev.cost && `$${ev.cost.toFixed(4)}`, lastModel].filter(Boolean);
   const canSave = !ev.replay && t?.querySelector('.step');
   const meta = el('div', 'turn-meta', `<span class="ok">${icon(ev.replay ? 'play' : 'check')}</span><span>${esc(bits.join(' · '))}</span><span class="acts"><button class="mini" data-a="copy" title="Copy answer">${icon('copy')}</button>${canSave ? `<button class="mini" data-a="save" title="Save these steps as a workflow you can replay without the AI">${icon('bookmark')}</button>` : ''}</span>`);
-  meta.querySelector('[data-a="copy"]').addEventListener('click', () => copy([...(t || log).querySelectorAll('.md')].map((m) => m.raw).filter(Boolean).join('\n\n')));
+  meta.querySelector('[data-a="copy"]').addEventListener('click', () => copy([...(t || log).querySelectorAll(':scope > .md')].map((m) => visible(m.raw)).filter(Boolean).join('\n\n')));
+  if (!ev.replay) setSuggestion(suggestionIn([...(t || log).querySelectorAll(':scope > .md')].map((m) => m.raw).pop()));
   meta.querySelector('[data-a="save"]')?.addEventListener('click', () => askWorkflowName(meta, t.since));
   add(meta, t || log);
 }
@@ -635,6 +694,7 @@ function renderWorkflowFailed(ev) {
 
 function renderUser(ev) {
   closeTurn(ev.ts);
+  setSuggestion('');
   lastUserTs = ev.ts || 0;
   const m = el('div', `msg-user${ev.workflow ? ' wf' : ''}`);
   if (ev.tab) {
@@ -682,6 +742,9 @@ function render(ev) {
     case 'permission_done': return resolvePermission(ev);
     case 'done': return renderDone(ev);
     case 'workflow_failed': return renderWorkflowFailed(ev);
+    case 'sub_text': return addSubText(ev);
+    case 'bg_task': return renderBgTask(ev);
+    case 'bg_done': return finishBgTask(ev);
     case 'stopped':
       closeTurn(ev.ts);
       return add(el('div', 'notice', 'Stopped'));
@@ -705,8 +768,10 @@ function render(ev) {
 
 function resetLog() {
   log.textContent = '';
+  setSuggestion('');
   turn = steps = thinkEl = streamEl = null;
   stepEls.clear();
+  bgCards.clear();
   refNames.clear();
   permEls.clear();
   lastModel = '';
@@ -995,21 +1060,29 @@ function commands() {
 let slashSel = 0;
 let slashItems = [];
 
+// @name: the AIs you can run a background task on, and your Claude Code subagents.
+function agentChoices() {
+  const kinds = ['claude', 'codex', 'ollama'].filter((k) => agentState(k) === 'on')
+    .map((k) => ({ name: k, desc: `Run a task on ${AGENTS[k].name} in the background`, icon: AGENTS[k].icon }));
+  const subs = available.claude ? (available.subagents || []).map((a) => ({ name: a.name, desc: a.description || 'Claude Code subagent', icon: 'bot' })) : [];
+  return [...subs, ...kinds].map((a) => ({ ...a, at: true, run: () => fill(`@${a.name} `) }));
+}
+
 function updateSlash() {
-  const m = /^\/(\S*)$/.exec(input.value);
+  const m = /^([/@])(\S*)$/.exec(input.value);
   const menu = $('slash');
   if (!m) {
     menu.hidden = true;
     return;
   }
-  const q = m[1].toLowerCase();
-  slashItems = commands().filter((c) => c.name.toLowerCase().startsWith(q) || (q && c.desc.toLowerCase().includes(q)));
+  const q = m[2].toLowerCase();
+  slashItems = (m[1] === '@' ? agentChoices() : commands()).filter((c) => c.name.toLowerCase().startsWith(q) || (q && c.desc.toLowerCase().includes(q)));
   if (!slashItems.length) {
     menu.hidden = true;
     return;
   }
   slashSel = Math.min(slashSel, slashItems.length - 1);
-  menu.innerHTML = slashItems.map((c, i) => `<button class="item${i === slashSel ? ' sel' : ''}" data-i="${i}" role="option"><span class="ico">${icon(c.icon)}</span><span><span class="t"><code>/${esc(c.name)}</code></span><span class="d">${esc(clip(c.desc, 70))}</span></span></button>`).join('');
+  menu.innerHTML = slashItems.map((c, i) => `<button class="item${i === slashSel ? ' sel' : ''}" data-i="${i}" role="option"><span class="ico">${icon(c.icon)}</span><span><span class="t"><code>${c.at ? '@' : '/'}${esc(c.name)}</code></span><span class="d">${esc(clip(c.desc, 70))}</span></span></button>`).join('');
   menu.querySelectorAll('.item').forEach((b) => b.addEventListener('mousedown', (e) => {
     e.preventDefault();
     runSlash(+b.dataset.i);
@@ -1052,11 +1125,66 @@ function renderWorkflows() {
   }
 }
 
+// ---------- @agent background tasks ----------
+
+const bgCards = new Map(); // bg sid -> card
+
+function startBgTask(agent, text) {
+  if (!agentChoices().some((a) => a.name === agent)) return toast(`No agent called @${agent}. Type @ to see them.`, 2500);
+  activeTab().then((tab) => port?.postMessage({ type: 'bg_task', sid, agent, text, tabId: tab?.id, kind: settings.agent, cwd: settings.cwd || '~', mode: settings.mode, model: currentModel(), ollamaUrl: settings.ollamaUrl }));
+  fill('');
+}
+
+function renderBgTask(ev) {
+  const card = el('div', 'bgcard run', `<div class="bh"><span class="si">${icon('bot')}</span><div class="bt"><b>@${esc(ev.agent)}</b><span class="task"></span></div><button class="mini" title="Open this task’s full chat">${icon('chev')}</button></div>
+    <div class="bl"><span class="spin"></span><span class="now">Starting…</span></div>`);
+  card.querySelector('.task').textContent = ev.text;
+  card.querySelector('button').addEventListener('click', () => openChat(ev.bg));
+  card.querySelector('.bh').addEventListener('click', (e) => !e.target.closest('button') && openChat(ev.bg));
+  bgCards.set(ev.bg, card);
+  add(card);
+}
+
+function updateBgTask(msg) {
+  const card = bgCards.get(msg.bg);
+  if (!card || !card.classList.contains('run')) return;
+  if (msg.tool) card.querySelector('.now').innerHTML = `<span class="shimmer">${describe(msg.tool.name, msg.tool.input).label}</span>`;
+  card.querySelector('.bl').dataset.n = msg.steps ? `${msg.steps} step${msg.steps === 1 ? '' : 's'}` : '';
+}
+
+function finishBgTask(ev) {
+  const card = bgCards.get(ev.bg);
+  if (!card) return;
+  card.classList.remove('run');
+  card.classList.add(ev.ok ? 'ok' : 'bad');
+  const meta = [ev.steps && `${ev.steps} step${ev.steps === 1 ? '' : 's'}`, ev.ms && fmtMs(ev.ms), ev.tokens && `${fmtTokens(ev.tokens)} tokens`].filter(Boolean).join(' · ');
+  const bl = card.querySelector('.bl');
+  bl.innerHTML = `<span class="st">${icon(ev.ok ? 'check' : 'x')}</span><span class="now">${ev.ok ? 'Done' : 'Didn’t finish'}${meta ? ` · ${esc(meta)}` : ''}</span>`;
+  delete bl.dataset.n;
+  if (ev.text) {
+    const res = el('div', 'md bres', markdown(ev.text));
+    res.raw = ev.text;
+    card.appendChild(res);
+    if (ev.text.length > 500) {
+      res.classList.add('clamped');
+      const more = el('button', 'more', 'Show all');
+      more.addEventListener('click', () => {
+        res.classList.toggle('clamped');
+        more.textContent = res.classList.contains('clamped') ? 'Show all' : 'Show less';
+      });
+      card.appendChild(more);
+    }
+  }
+  if (!replaying && nearBottom()) scrollDown();
+}
+
 function runSlash(i) {
   const c = slashItems[i];
   $('slash').hidden = true;
-  input.value = '';
-  autosize();
+  if (!c?.at) {
+    input.value = '';
+    autosize();
+  }
   c?.run();
 }
 
@@ -1227,7 +1355,7 @@ const VOICE_FIX_PROMPT = 'You fix speech-to-text transcripts. The user dictated 
 // What the fixer gets to go on: the page, and the last thing said in the chat.
 function voiceContext() {
   const lastUser = [...log.querySelectorAll('.msg-user .bubble')].pop()?.textContent || '';
-  const lastAi = [...log.querySelectorAll('.md')].pop()?.raw || '';
+  const lastAi = visible([...log.querySelectorAll('.md')].pop()?.raw || '');
   return [
     currentTab && `Page: ${clip(currentTab.title, 80)} (${hostOf(currentTab.url || '')})`,
     lastUser && `Their last message: ${clip(lastUser, 160)}`,
@@ -1410,12 +1538,21 @@ function connect() {
       }
       if (msg.busy && !busySince) busySince = [...(msg.events || [])].reverse().find((e) => e.t === 'user')?.ts || Date.now();
       setBusy(!!msg.busy);
+      const lastEv = (msg.events || []).filter((e) => e.t !== 'notice').pop();
+      if (!msg.busy && lastEv?.t === 'done' && !lastEv.replay) setSuggestion(suggestionIn([...(msg.events || [])].reverse().find((e) => e.t === 'text')?.text));
       if (!msg.events?.length) renderEmpty();
+      if (msg.parent) {
+        const back = el('button', 'backbar', `${icon('chev')}<span>Back to the chat that started this</span><small>@${esc(msg.agent || 'agent')} · background task</small>`);
+        back.addEventListener('click', () => openChat(msg.parent));
+        log.prepend(back);
+      }
       scrollDown();
     } else if (msg.type === 'event') render(msg.ev);
     else if (msg.type === 'terminal') {
       terminal = msg;
       renderAgentUI();
+    } else if (msg.type === 'bg_update') {
+      updateBgTask(msg);
     } else if (msg.type === 'voice_fixed') {
       fixWaits.get(msg.id)?.(msg.text);
       fixWaits.delete(msg.id);
@@ -1459,6 +1596,7 @@ async function send(text) {
   text = String(text || '').trim();
   if (!text && !attachments.length) return;
   let m;
+  if ((m = /^@([\w-]+)\s+([\s\S]+)$/.exec(text))) return startBgTask(m[1], m[2].trim());
   if ((m = /^\/save\s+(\S+)$/.exec(text))) {
     port?.postMessage({ type: 'save_workflow', sid, name: m[1], since: 0 });
     return fill('');
@@ -1487,6 +1625,31 @@ function autosize() {
   updateSendState();
 }
 
+// ---------- suggested reply: shown in the empty box, Tab puts it in ----------
+
+let suggestion = '';
+
+function setSuggestion(text) {
+  suggestion = text || '';
+  const g = $('ghost');
+  g.querySelector('.gt').textContent = suggestion;
+  showGhost();
+}
+
+function showGhost() {
+  const on = !!suggestion && !input.value && !attachments.length && !busy && !voice && !polish;
+  $('ghost').hidden = !on;
+  $('composer').classList.toggle('has-ghost', on);
+}
+
+function takeSuggestion() {
+  if (!suggestion) return false;
+  fill(suggestion);
+  input.setSelectionRange(input.value.length, input.value.length);
+  showGhost();
+  return true;
+}
+
 // While the AI works, the button stops it, or queues what you typed as a follow-up.
 function updateSendState() {
   const has = !!(input.value.trim() || attachments.length);
@@ -1494,6 +1657,7 @@ function updateSendState() {
   sendBtn.classList.toggle('queue', busy && has);
   sendBtn.title = busy ? (has ? 'Send when this finishes (Enter)' : 'Stop (Esc)') : 'Send (Enter)';
   if (!voice) input.placeholder = busy ? 'Add a follow-up… it’s sent when this finishes' : PLACEHOLDER;
+  showGhost();
 }
 
 function renderQueue(items) {
@@ -1591,6 +1755,8 @@ async function init() {
     } else if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
       send(input.value);
+    } else if (e.key === 'Tab' && !e.shiftKey && !input.value && takeSuggestion()) {
+      e.preventDefault();
     }
   });
   input.addEventListener('paste', (e) => {
@@ -1607,6 +1773,11 @@ async function init() {
   });
   $('shotBtn').addEventListener('click', attachScreenshot);
   $('micBtn').addEventListener('click', toggleVoice);
+  $('ghost').addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    takeSuggestion();
+    input.focus();
+  });
   $('micBtn').hidden = !Recognition;
 
   // drag & drop

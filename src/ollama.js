@@ -157,7 +157,7 @@ export async function runOllamaTurn(s, text, images, { emit, signal, systemPromp
           result = gate.message;
         } else {
           try {
-            const res = await callTool(name, args);
+            const res = await callTool(name, { ...args, __sid: s.sid });
             result = res.text || (res.image ? 'Screenshot taken.' : 'Done.');
             image = res.image;
           } catch (e) {

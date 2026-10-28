@@ -43,6 +43,8 @@ export function runMcp() {
             // One browser: run tool calls strictly in order, even if the client sends them in parallel.
             const args = { ...(params.arguments || {}) };
             if (params.name === 'approve_action') Object.assign(args, { sid: process.env.AICHROME_SESSION, mode: process.env.AICHROME_MODE });
+            // Side panel chats: say which chat a call is from, so a background @agent task gets its own tab.
+            else if (process.env.AICHROME_SESSION) args.__sid = process.env.AICHROME_SESSION;
             // Waiting for the side panel must not block the other tools.
             if (params.name === 'sidepanel_wait' || params.name === 'approve_action') {
               const res = await callTool(params.name, args);

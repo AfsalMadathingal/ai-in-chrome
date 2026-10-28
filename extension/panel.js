@@ -43,7 +43,7 @@ function persist(sid) {
     if (!ev.image) return ev;
     return ++images <= KEEP_IMAGES ? ev : { ...ev, image: undefined };
   }).reverse();
-  chrome.storage.local.set({ [`chat:${sid}`]: { events, sessionId: c.sessionId, kind: c.kind } });
+  chrome.storage.local.set({ [`chat:${sid}`]: { events, sessionId: c.sessionId, kind: c.kind, parent: c.parent, agent: c.agent, url: c.url } });
 }
 
 // ---------- chat list (history drawer) ----------
@@ -107,6 +107,7 @@ export async function emit(sid, ev) {
   if (ev.t === 'busy' && !ev.on && c.queue?.length) setTimeout(() => flushQueue(sid), 0);
   if (c.events.length > EVENT_LIMIT) c.events.splice(0, c.events.length - EVENT_LIMIT);
   broadcast(sid, { type: 'event', ev });
+  if (c.parent) bgProgress(sid, c, ev);
   if ((ev.t === 'busy' && !ev.on) || ev.t === 'user') persist(sid);
 }
 
@@ -133,7 +134,7 @@ chrome.runtime.onConnect.addListener((port) => {
       if (msg.type === 'hello') {
         subscribe(msg.sid);
         const c = await chat(msg.sid);
-        port.postMessage({ type: 'history', events: c.events, busy: c.busy, terminal: terminalStatus() });
+        port.postMessage({ type: 'history', events: c.events, busy: c.busy, terminal: terminalStatus(), parent: c.parent, agent: c.agent });
         port.postMessage(queueMsg(msg.sid, c));
         await listAgents(msg.sid, port);
       } else if (msg.type === 'send') await send(msg);
@@ -154,6 +155,7 @@ chrome.runtime.onConnect.addListener((port) => {
       else if (msg.type === 'set_mode') setMode(msg.mode);
       else if (msg.type === 'save_workflow') port.postMessage({ type: 'workflow_saved', ...(await saveWorkflow(msg)) });
       else if (msg.type === 'run_workflow') await runWorkflow(msg);
+      else if (msg.type === 'bg_task') await startBackground(msg);
     } catch (e) {
       port.postMessage({ type: 'event', ev: { t: 'error', message: String(e.message || e) } });
     }
@@ -163,7 +165,7 @@ chrome.runtime.onConnect.addListener((port) => {
 // Ask the host which AIs are installed (and which Ollama models), at the Ollama address set in the panel.
 async function listAgents(sid, port) {
   const { panelSettings } = await chrome.storage.local.get('panelSettings');
-  if (!deps.hostSend({ type: 'agent_list', sid, ollamaUrl: panelSettings?.ollamaUrl || '' })) {
+  if (!deps.hostSend({ type: 'agent_list', sid, ollamaUrl: panelSettings?.ollamaUrl || '', cwd: panelSettings?.cwd || '~' })) {
     port.postMessage({ type: 'event', ev: { t: 'available', host: false } });
   }
 }
@@ -204,8 +206,8 @@ async function send(msg) {
     return;
   }
   c.kind = kind;
-  if (tabId != null) deps.setCurrentTab(tabId);
-  const line = await tabLine(tabId);
+  if (tabId != null && !c.parent) deps.setCurrentTab(tabId); // a background task works in its own tab
+  const line = c.parent ? `[Tab: your own background tab, opened at ${c.url || 'about:blank'}]` : await tabLine(tabId);
   await emit(sid, { t: 'user', text, tab: line, thumbs: thumbs.length ? thumbs : undefined });
   const index = await chatIndex();
   await touchChat(sid, { title: index[sid]?.title || text.replace(/\s+/g, ' ').slice(0, 80) || 'Image', kind });
@@ -252,6 +254,8 @@ function stop(sid, { restore = false } = {}) {
 
 const READ_ONLY = new Set(['tabs_context', 'read_page', 'find', 'get_page_text', 'read_console_messages', 'read_network_requests', 'sidepanel_reply']);
 const READ_ONLY_COMPUTER = new Set(['screenshot', 'zoom', 'wait', 'scroll', 'scroll_to', 'hover', 'mouse_move']);
+// Read-only web tools that touch neither the browser nor the computer: "Act without asking" covers them too.
+const WEB_READ = new Set(['WebSearch', 'WebFetch', 'web_search']);
 
 function permissionKey(tool, input) {
   const short = tool.replace(/^mcp__ai-in-chrome__/, '');
@@ -285,23 +289,28 @@ export async function approve_action({ sid, mode, tool_name: tool = '', input = 
   const browser = tool.startsWith('mcp__ai-in-chrome__');
   const short = tool.replace(/^mcp__ai-in-chrome__/, '');
   if (short === 'approve_action') return deny('Not allowed.');
-  if (browser && (await currentMode(mode)) === 'auto') return allow;
+  if ((browser || WEB_READ.has(tool)) && (await currentMode(mode)) === 'auto') return allow;
   if (browser && (READ_ONLY.has(short) || (short === 'computer' && READ_ONLY_COMPUTER.has(input.action)))) return allow;
   const key = browser ? permissionKey(tool, input) : tool;
   if (allowed.get(sid)?.has(key)) return allow;
-  if (!sid || !ports.get(sid)?.size) return deny('The AI in Chrome side panel is closed, so the user could not approve this action.');
+  // A background @agent task has no panel of its own: ask in the chat that started it.
+  const where = ports.get(sid)?.size ? sid : chats.get(sid)?.parent;
+  if (!sid || !where || !ports.get(where)?.size) return deny('The AI in Chrome side panel is closed, so the user could not approve this action.');
 
   const id = `${sid}:${++seq}`;
-  await emit(sid, { t: 'permission', id, tool: browser ? short : tool, key, input: JSON.stringify(input).slice(0, 1500) });
+  const agent = where !== sid ? chats.get(sid)?.agent : undefined;
+  await emit(where, { t: 'permission', id, tool: browser ? short : tool, key, browser, agent, input: JSON.stringify(input).slice(0, 1500) });
   const decision = await new Promise((resolve) => {
-    approvals.set(id, { resolve, browser });
+    approvals.set(id, { resolve, browser, sid, key });
     setTimeout(() => resolve('timeout'), 5 * 60 * 1000);
   });
   approvals.delete(id);
-  await emit(sid, { t: 'permission_done', id, decision });
+  await emit(where, { t: 'permission_done', id, decision });
   if (decision === 'always') {
     if (!allowed.has(sid)) allowed.set(sid, new Set());
     allowed.get(sid).add(key);
+    // The same request may already be waiting a second time (parallel tool calls): answer it too.
+    for (const a of approvals.values()) if (a.sid === sid && a.key === key) a.resolve('always');
   }
   if (decision === 'allow' || decision === 'always') return allow;
   return deny(decision === 'timeout' ? 'No answer from the user within 5 minutes.' : 'The user denied this action in the side panel. Ask what they want instead.');
@@ -497,5 +506,45 @@ async function runWorkflow({ sid, name, tabId }) {
   } finally {
     c.replay = null;
     await emit(sid, { t: 'busy', on: false });
+  }
+}
+
+// ---------- @agent: a task run in its own background chat and tab, summarized in the chat that started it ----------
+
+const AI_KINDS = new Set(['claude', 'codex', 'ollama']);
+
+export function bgInfo(sid) {
+  const c = chats.get(sid);
+  return c?.parent ? { url: c.url } : null;
+}
+
+async function startBackground({ sid, agent, text, tabId, cwd, mode, model, ollamaUrl, kind }) {
+  const tab = tabId != null ? await chrome.tabs.get(tabId).catch(() => null) : null;
+  const bg = `bg-${crypto.randomUUID()}`;
+  const c = await chat(bg);
+  Object.assign(c, { parent: sid, agent, url: /^https?:/.test(tab?.url || '') ? tab.url : '' });
+  const runKind = AI_KINDS.has(agent) ? agent : 'claude';
+  const prompt = AI_KINDS.has(agent)
+    ? `${text}\n\nThis runs in the background. When you're done, end with a short summary of the result.`
+    : `Use the "${agent}" subagent for this task. When it's done, reply with a short summary of what it found or did.\n\n${text}`;
+  await emit(sid, { t: 'bg_task', bg, agent, text });
+  await touchChat(bg, { title: `@${agent}: ${text.replace(/\s+/g, ' ').slice(0, 70)}`, kind: runKind });
+  // The panel's model setting belongs to the AI picked in the panel; another AI uses its default.
+  await send({ sid: bg, kind: runKind, text: prompt, cwd, mode, model: runKind === kind ? model : '', ollamaUrl });
+}
+
+// Live progress for the card in the parent chat, and the result when it ends.
+function bgProgress(sid, c, ev) {
+  if (ev.t === 'tool' || ev.t === 'tool_result' || ev.t === 'busy') {
+    const steps = c.events.filter((e) => e.t === 'tool' && !e.parent).length;
+    broadcast(c.parent, { type: 'bg_update', bg: sid, steps, tool: ev.t === 'tool' ? { name: ev.name, input: ev.input } : undefined, busy: c.busy });
+  }
+  if (ev.t === 'done' || ev.t === 'error' || ev.t === 'stopped') {
+    const text = [...c.events].reverse().find((e) => e.t === 'text' && !e.parent)?.text || '';
+    const steps = c.events.filter((e) => e.t === 'tool' && !e.parent).length;
+    emit(c.parent, {
+      t: 'bg_done', bg: sid, agent: c.agent, ok: ev.t === 'done' && !ev.error, steps, ms: ev.ms, tokens: ev.tokens,
+      text: ev.t === 'stopped' ? 'Stopped.' : ev.t === 'error' ? ev.message : ev.error || text,
+    });
   }
 }
