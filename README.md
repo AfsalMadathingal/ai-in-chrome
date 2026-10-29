@@ -25,7 +25,7 @@ side panel / aichrome CLI / any MCP client ──► local bridge (socket or nam
 
 | Area | What you get |
 |---|---|
-| **Side panel chat** | Claude Code / Codex / Ollama (local models) / Terminal AI picker, streaming answers, thinking blocks, a step timeline with screenshots, plan checklists, permission cards, chat history, image attachments, slash commands, saved prompts, light and dark themes |
+| **Side panel chat** | Claude Code / Codex / Ollama (local models) / Terminal AI picker, streaming answers, thinking blocks, a step timeline with screenshots, plan checklists, permission cards, chat history, image attachments, slash commands, saved prompts, themes (light, dark, and VS Code-style Code Dark / Code Light) |
 | **Browser control** | Tabs, navigation, clicks, typing, keys, scrolling, drag, hover, zoom, screenshots (≤1568 px), form filling, page text, JavaScript |
 | **Page understanding** | Accessibility tree with `ref_N` refs (handles `display: contents` and hidden duplicates), `find` by words |
 | **Network & debugging** | Full capture with real Cookie and Authorization headers, bodies, WebSocket frames; copy as curl or fetch; replay with edits; `http_request` as the logged-in user (in page, from the extension with no CORS limits, or from Node); cookies incl. HttpOnly; localStorage and sessionStorage; live block, mock, rewrite and delay rules; HAR export; console logs and errors |
@@ -261,7 +261,7 @@ The composer:
 
 For tasks that need judgment each time, `/skill name` asks the AI to write a Claude Code skill (`~/.claude/skills/name/SKILL.md`) with the exact steps, so next time it follows the recipe instead of exploring the page.
 
-**History** (clock icon) lists past chats, grouped by day, with search and delete. **Settings** (gear icon): AI, permission mode, working folder, model, theme (system, light or dark), saved workflows and saved shortcuts. After installing or updating, run `aichrome install` once so the panel can find `claude` / `codex`.
+**History** (clock icon) lists past chats, grouped by day, with search and delete. **Settings** (gear icon): AI, permission mode, working folder, model, theme (system, light, dark, or Code Dark / Code Light: VS Code colors, where answers read like an editor and code blocks are syntax highlighted), saved workflows and saved shortcuts. After installing or updating, run `aichrome install` once so the panel can find `claude` / `codex`.
 
 ## Use it with AI
 

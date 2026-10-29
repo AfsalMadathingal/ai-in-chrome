@@ -234,6 +234,43 @@ const suggestionIn = (s) => {
   return m ? m[1].replace(/\s+/g, ' ').trim().slice(0, 200) : '';
 };
 
+// ---------- code highlighting: a light tokenizer, good enough for the snippets an AI writes ----------
+
+const KEYWORDS = new Set(('const let var function return if else for while do break continue switch case default new delete typeof instanceof in of ' +
+  'class extends super this import export from as async await yield try catch finally throw void null undefined true false ' +
+  'def lambda pass with is not and or elif None True False self print fn pub mut impl struct enum use mod match ' +
+  'interface type public private protected static final package func go defer chan map range select ' +
+  'SELECT FROM WHERE AND OR INSERT INTO VALUES UPDATE SET DELETE JOIN ON GROUP BY ORDER LIMIT AS CREATE TABLE ' +
+  'echo export local then fi esac done').split(' '));
+const HASH_COMMENTS = /^(py|python|sh|bash|zsh|shell|console|yaml|yml|toml|rb|ruby|r|perl|dockerfile|make|makefile|ini|conf)$/i;
+const TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->)|(#[^\n]*)|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`)|(\b\d[\d_]*(?:\.\d+)?(?:e[+-]?\d+)?\b|\b0x[\da-f]+\b)|([A-Za-z_$][\w$]*)(\s*\()?|(<\/?[A-Za-z][\w-]*)/gi;
+
+const TOKEN_NO_HASH = new RegExp(TOKEN.source.replace('(#[^\\n]*)', '((?!x)x)'), 'gi'); // '#' is not a comment in JS, CSS, C…
+
+function highlight(code, lang) {
+  const hash = HASH_COMMENTS.test(lang);
+  let out = '';
+  let last = 0;
+  const span = (cls, text) => `<span class="tk-${cls}">${esc(text)}</span>`;
+  for (const m of code.matchAll(hash ? TOKEN : TOKEN_NO_HASH)) {
+    out += esc(code.slice(last, m.index));
+    last = m.index + m[0].length;
+    const [all, comment, hashed, str, num, word, call, tag] = m;
+    if (comment) out += span('c', comment);
+    else if (hashed) out += span('c', hashed);
+    else if (str) out += span(/^\s*:/.test(code.slice(last)) ? 'p' : 's', str); // "key": in JSON reads as a property
+    else if (num) out += span('n', num);
+    else if (word) {
+      if (KEYWORDS.has(word)) out += span('k', word) + esc(call || '');
+      else if (call) out += span('f', word) + esc(call);
+      else if (/^[A-Z][a-z]/.test(word)) out += span('t', word);
+      else out += esc(word);
+    } else if (tag) out += span('k', tag);
+    else out += esc(all);
+  }
+  return out + esc(code.slice(last));
+}
+
 function markdown(src) {
   src = visible(src);
   const out = [];
@@ -241,8 +278,10 @@ function markdown(src) {
   for (let i = 0; i < parts.length; i += 3) {
     out.push(blocks(esc(parts[i])));
     if (i + 2 < parts.length) {
-      const lang = esc(parts[i + 1].trim() || 'text');
-      out.push(`<div class="code"><div class="bar"><span>${lang}</span><button class="mini" data-copy title="Copy code">${icon('copy')}</button></div><pre><code>${esc(parts[i + 2].replace(/\n$/, ''))}</code></pre></div>`);
+      const raw = parts[i + 1].trim() || 'text';
+      const lang = esc(raw);
+      const code = parts[i + 2].replace(/\n$/, '');
+      out.push(`<div class="code"><div class="bar"><span>${lang}</span><button class="mini" data-copy title="Copy code">${icon('copy')}</button></div><pre><code>${/^(text|txt|plain|plaintext|md|markdown)$/i.test(raw) ? esc(code) : highlight(code, raw)}</code></pre></div>`);
     }
   }
   return out.join('');
@@ -919,7 +958,7 @@ function renderAgentUI() {
     closeMenus();
   }));
   $('modeSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', b.dataset.v === settings.mode));
-  $('themeSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', b.dataset.v === settings.theme));
+  renderThemes();
   $('voiceFixSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', b.dataset.v === String(settings.voiceFix !== false)));
 
   const h = $('agentHint');
@@ -940,8 +979,33 @@ function renderAgentUI() {
   updateStatus();
 }
 
+// Each card previews its theme: background, panel, accent, and three of its code colors.
+const THEMES = [
+  { id: 'system', name: 'System', desc: 'Light or dark, like your computer' },
+  { id: 'light', name: 'Light', bg: '#faf9f5', panel: '#ffffff', accent: '#c96442', syn: ['#8a5a00', '#a23b2a', '#2f5fa8'] },
+  { id: 'dark', name: 'Dark', bg: '#262624', panel: '#30302e', accent: '#d97757', syn: ['#e6c07b', '#e5a07a', '#7fb2f0'] },
+  { id: 'code', name: 'Code Dark', desc: 'VS Code blue and grey', bg: '#1f1f1f', panel: '#181818', accent: '#0078d4', syn: ['#dcdcaa', '#ce9178', '#569cd6'] },
+  { id: 'code-light', name: 'Code Light', desc: 'VS Code light', bg: '#ffffff', panel: '#f8f8f8', accent: '#005fb8', syn: ['#795e26', '#a31515', '#0000ff'] },
+];
+
+function themePreview(t) {
+  if (t.id === 'system') {
+    const [l, d] = [THEMES[1], THEMES[2]];
+    return `<span class="tp split"><span style="background:${l.bg}"></span><span style="background:${d.bg}"></span></span>`;
+  }
+  const line = (w, c) => `<i style="width:${w}%;background:${c}"></i>`;
+  return `<span class="tp" style="background:${t.bg}"><span class="tp-bar" style="background:${t.panel}"><b style="background:${t.accent}"></b></span>
+    <span class="tp-lines">${line(42, t.syn[0])}${line(64, t.syn[1])}${line(30, t.syn[2])}</span></span>`;
+}
+
+function renderThemes() {
+  const grid = $('themeGrid');
+  grid.innerHTML = THEMES.map((t) => `<button class="theme${t.id === settings.theme ? ' cur' : ''}" data-v="${t.id}" title="${esc(t.desc || t.name)}">${themePreview(t)}<span class="tn">${esc(t.name)}</span></button>`).join('');
+  grid.querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('theme', b.dataset.v)));
+}
+
 function applyTheme() {
-  if (settings.theme === 'light' || settings.theme === 'dark') document.documentElement.dataset.theme = settings.theme;
+  if (THEMES.some((t) => t.id === settings.theme && t.id !== 'system')) document.documentElement.dataset.theme = settings.theme;
   else delete document.documentElement.dataset.theme;
 }
 
@@ -1779,7 +1843,6 @@ async function init() {
   $('scrim').addEventListener('click', closeDrawers);
   $('historySearch').addEventListener('input', renderHistory);
   $('modeSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('mode', b.dataset.v)));
-  $('themeSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('theme', b.dataset.v)));
   $('voiceFixSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('voiceFix', b.dataset.v === 'true')));
   $('cwd').value = settings.cwd;
   $('model').addEventListener('change', () => setSetting(isOllama() ? 'ollamaModel' : 'model', $('model').value.trim()));

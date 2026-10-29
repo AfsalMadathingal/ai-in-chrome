@@ -23,10 +23,12 @@
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.14);
   --serif: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  /* code colors: keyword, function, string, number, type, property, comment */
+  --syn-k: #2f5fa8; --syn-f: #8a5a00; --syn-s: #a23b2a; --syn-n: #2f7d4f; --syn-t: #1d7a83; --syn-p: #6a3fa0; --syn-c: #8b8a84;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
+  :root:not([data-theme]) {
     --bg: #262624;
     --surface: #30302e;
     --sunken: #1f1e1d;
@@ -49,6 +51,7 @@
     --warn-line: #6a5a35;
     --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.25);
     --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+    --syn-k: #7fb2f0; --syn-f: #e6c07b; --syn-s: #e5a07a; --syn-n: #a8d5a2; --syn-t: #6fcfc4; --syn-p: #c7a6f0; --syn-c: #8a877f;
     color-scheme: dark;
   }
 }
@@ -75,7 +78,69 @@
   --warn-line: #6a5a35;
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.3), 0 4px 16px rgba(0, 0, 0, 0.25);
   --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.5);
+  --syn-k: #7fb2f0; --syn-f: #e6c07b; --syn-s: #e5a07a; --syn-n: #a8d5a2; --syn-t: #6fcfc4; --syn-p: #c7a6f0; --syn-c: #8a877f;
   color-scheme: dark;
+}
+
+/* Code themes: VS Code's blue and grey. Answers read like an editor: headings in function color, bold as variables,
+   inline code as strings, quotes as comments, and each answer sits in a block with an indent guide. */
+:root[data-theme="code"] {
+  --bg: #1f1f1f;
+  --surface: #252526;
+  --sunken: #181818;
+  --hover: #2a2d2e;
+  --text: #d4d4d4;
+  --muted: #9d9d9d;
+  --faint: #6e7681;
+  --line: rgba(255, 255, 255, 0.08);
+  --line-strong: rgba(255, 255, 255, 0.16);
+  --accent: #0078d4;
+  --accent-hover: #1a8ae6;
+  --accent-soft: rgba(0, 120, 212, 0.18);
+  --accent-text: #ffffff;
+  --link: #4daafc;
+  --user: #04395e;
+  --code: #181818;
+  --ok: #89d185;
+  --bad: #f48771;
+  --bad-soft: rgba(244, 135, 113, 0.1);
+  --warn-bg: #352a05;
+  --warn-line: #6b5a1c;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 16px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.55);
+  --serif: var(--mono);
+  --mono: "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --syn-k: #569cd6; --syn-f: #dcdcaa; --syn-s: #ce9178; --syn-n: #b5cea8; --syn-t: #4ec9b0; --syn-p: #9cdcfe; --syn-c: #6a9955; --syn-ctl: #c586c0; --syn-punct: #808080;
+  color-scheme: dark;
+}
+:root[data-theme="code-light"] {
+  --bg: #ffffff;
+  --surface: #f8f8f8;
+  --sunken: #f3f3f3;
+  --hover: #e8e8e8;
+  --text: #1f1f1f;
+  --muted: #616161;
+  --faint: #8b8b8b;
+  --line: rgba(0, 0, 0, 0.09);
+  --line-strong: rgba(0, 0, 0, 0.18);
+  --accent: #005fb8;
+  --accent-hover: #0258a8;
+  --accent-soft: rgba(0, 95, 184, 0.1);
+  --accent-text: #ffffff;
+  --link: #005fb8;
+  --user: #e5f0fb;
+  --code: #f3f3f3;
+  --ok: #388a34;
+  --bad: #c72e0f;
+  --bad-soft: rgba(199, 46, 15, 0.07);
+  --warn-bg: #fdf6e3;
+  --warn-line: #e6d39a;
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 16px rgba(0, 0, 0, 0.07);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.15);
+  --serif: var(--mono);
+  --mono: "Cascadia Code", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  --syn-k: #0000ff; --syn-f: #795e26; --syn-s: #a31515; --syn-n: #098658; --syn-t: #267f99; --syn-p: #001080; --syn-c: #008000; --syn-ctl: #af00db; --syn-punct: #8b8b8b;
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -491,3 +556,57 @@ body.busy .send:not(.queue) .i-stop { display: block; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* ---------- code highlighting (every theme) ---------- */
+.tk-k { color: var(--syn-k); }
+.tk-f { color: var(--syn-f); }
+.tk-s { color: var(--syn-s); }
+.tk-n { color: var(--syn-n); }
+.tk-t { color: var(--syn-t); }
+.tk-p { color: var(--syn-p); }
+.tk-c { color: var(--syn-c); font-style: italic; }
+
+/* ---------- theme picker ---------- */
+.themes { display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.theme { display: flex; flex-direction: column; gap: 6px; padding: 6px 6px 7px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); text-align: left; transition: border-color .12s, transform .12s; }
+.theme:hover { border-color: var(--line-strong); transform: translateY(-1px); }
+.theme.cur { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+.theme .tn { font-size: 12px; font-weight: 550; padding-left: 2px; }
+.tp { display: block; height: 46px; border-radius: 6px; overflow: hidden; border: 1px solid rgba(128, 128, 128, .22); }
+.tp-bar { display: flex; align-items: center; height: 11px; padding: 0 5px; }
+.tp-bar b { width: 14px; height: 4px; border-radius: 2px; }
+.tp-lines { display: grid; gap: 4px; padding: 6px 7px; }
+.tp-lines i { display: block; height: 4px; border-radius: 2px; }
+.tp.split { display: grid; grid-template-columns: 1fr 1fr; }
+
+/* ---------- code themes: answers styled like an editor ---------- */
+:root[data-theme^="code"] .topbar { background: var(--sunken); }
+:root[data-theme^="code"] .pill { font-family: var(--mono); font-size: 12.5px; }
+:root[data-theme^="code"] .status { font-family: var(--mono); font-size: 11.5px; }
+:root[data-theme^="code"] .composer { border-radius: 8px; }
+:root[data-theme^="code"] .composer:focus-within { border-color: var(--accent); box-shadow: var(--shadow); }
+:root[data-theme^="code"] .msg-user .bubble { border-radius: 8px; border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent); }
+:root[data-theme^="code"] .steps, :root[data-theme^="code"] .plan, :root[data-theme^="code"] .md .code, :root[data-theme^="code"] .md .tablewrap { border-radius: 6px; }
+:root[data-theme^="code"] .step .si { color: var(--syn-k); }
+:root[data-theme^="code"] .step .lbl code { color: var(--syn-s); }
+:root[data-theme^="code"] .steps-head b { color: var(--syn-f); font-family: var(--mono); font-weight: 500; }
+
+/* each answer is a block: a header like a function signature, an indent guide, and a closing brace */
+:root[data-theme^="code"] .turn > .md { position: relative; padding-left: 14px; margin-left: 3px; border-left: 1px solid var(--line-strong); }
+:root[data-theme^="code"] .turn > .md::before { content: "ƒ answer() {"; display: block; margin: 0 0 6px -14px; font: 11.5px/1.4 var(--mono); color: var(--syn-punct); }
+:root[data-theme^="code"] .turn > .md:not(.streaming)::after { content: "}"; display: block; margin: 6px 0 0 -14px; font: 11.5px/1.4 var(--mono); color: var(--syn-punct); }
+:root[data-theme^="code"] .md h1, :root[data-theme^="code"] .md h2, :root[data-theme^="code"] .md h3, :root[data-theme^="code"] .md h4 { font: 600 14px/1.35 var(--mono); color: var(--syn-f); }
+:root[data-theme^="code"] .md h1 { font-size: 15.5px; }
+:root[data-theme^="code"] .md h1::before { content: "# "; color: var(--syn-punct); font-weight: 400; }
+:root[data-theme^="code"] .md h2::before { content: "## "; color: var(--syn-punct); font-weight: 400; }
+:root[data-theme^="code"] .md h3::before, :root[data-theme^="code"] .md h4::before { content: "### "; color: var(--syn-punct); font-weight: 400; }
+:root[data-theme^="code"] .md strong { color: var(--syn-p); font-weight: 600; }
+:root[data-theme^="code"] .md em { color: var(--syn-t); }
+:root[data-theme^="code"] .md :not(pre) > code { color: var(--syn-s); background: var(--code); border-color: transparent; }
+:root[data-theme^="code"] .md a { color: var(--link); border-bottom-color: color-mix(in srgb, var(--link) 40%, transparent); }
+:root[data-theme^="code"] .md ul > li::marker { color: var(--syn-ctl); }
+:root[data-theme^="code"] .md ol > li::marker { color: var(--syn-n); font-family: var(--mono); font-size: .9em; }
+:root[data-theme^="code"] .md blockquote { color: var(--syn-c); border-left-color: color-mix(in srgb, var(--syn-c) 55%, transparent); font-style: italic; }
+:root[data-theme^="code"] .md th { color: var(--syn-k); font-family: var(--mono); font-weight: 600; font-size: 12px; }
+:root[data-theme^="code"] .md hr { border-top-style: dashed; }
+:root[data-theme^="code"] .empty h1 { font-size: 20px; color: var(--syn-f); }
