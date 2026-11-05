@@ -10,12 +10,12 @@ export const TOOLS = [
   },
   {
     name: 'tabs_create',
-    description: 'Open a new tab (added to the "AI" tab group) and make it the current tab.',
+    description: 'Open a new tab in the "AI" tab group and make it the current tab. It opens in the background, so the user keeps working undisturbed.',
     inputSchema: { type: 'object', properties: { url: { type: 'string', description: 'URL to open (optional)' } } },
   },
   {
     name: 'tabs_select',
-    description: 'Activate a tab and make it the current tab for later commands.',
+    description: 'Make a tab the current tab for later commands. It is worked on in the background; the user\'s view doesn\'t switch.',
     inputSchema: { type: 'object', properties: { tabId }, required: ['tabId'] },
   },
   {
@@ -25,7 +25,7 @@ export const TOOLS = [
   },
   {
     name: 'navigate',
-    description: 'Navigate a tab to a URL and wait for it to load. Use "back", "forward" or "reload" for history.',
+    description: 'Navigate a tab to a URL and wait for it to load. Use "back", "forward" or "reload" for history. On one of the user\'s own tabs (outside the AI group) this opens the URL in a new AI tab instead, leaving theirs as it was.',
     inputSchema: { type: 'object', properties: { url: { type: 'string' }, tabId }, required: ['url'] },
   },
   {

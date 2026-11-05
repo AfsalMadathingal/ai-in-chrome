@@ -22,6 +22,15 @@ function setCurrentTab(id) {
   currentTab = id;
   chrome.storage.local.set({ currentTab: id });
 }
+
+// Where the AI works. 'group' (default): its own tabs in the AI group, opened in the background, so the tabs
+// you're using never switch, lose focus or get navigated away. 'mine': it may take over your tabs.
+let tabMode = 'group';
+chrome.storage.local.get('panelSettings').then((v) => (tabMode = v.panelSettings?.tabs || 'group'));
+chrome.storage.onChanged.addListener((ch) => {
+  if (ch.panelSettings) tabMode = ch.panelSettings.newValue?.tabs || 'group';
+});
+const ownTabs = () => tabMode !== 'mine';
 const attached = new Set();
 const shotScale = new Map(); // tabId -> { sx, sy } CSS px per screenshot px
 const consoleLogs = new Map(); // tabId -> [{ level, text, url, ts }]
@@ -211,12 +220,15 @@ async function tabs_context() {
     ].filter(Boolean);
     return `${t.id}\t${flags.length ? '[' + flags.join(',') + '] ' : ''}${t.title || ''}\n\t${t.url || ''}`;
   });
-  return `Tabs (tabId, title, url). Commands without tabId use the current tab, else the active tab.\n${lines.join('\n')}`;
+  const how = ownTabs()
+    ? 'Tabs you open go in the AI group in the background; navigate on one of the user\'s tabs opens a new AI tab instead.'
+    : 'You may use and switch the user\'s tabs.';
+  return `Tabs (tabId, title, url). Commands without tabId use the current tab, else the active tab. ${how}\n${lines.join('\n')}`;
 }
 
 async function tabs_create({ url }) {
   const win = await chrome.windows.getLastFocused().catch(() => null);
-  const tab = await chrome.tabs.create({ url: 'about:blank', active: true, ...(win && { windowId: win.id }) });
+  const tab = await chrome.tabs.create({ url: 'about:blank', active: !ownTabs(), ...(win && { windowId: win.id }) });
   await addToGroup(tab.id);
   setCurrentTab(tab.id);
   ensureAttached(tab.id).catch(() => {});
@@ -234,6 +246,12 @@ async function tabs_close({ tabId }) {
 
 async function tabs_select({ tabId }) {
   if (tabId == null) throw new Error('tabId is required');
+  if (ownTabs()) {
+    // Work on it without bringing it to the front.
+    const tab = await chrome.tabs.get(Number(tabId));
+    setCurrentTab(tab.id);
+    return `Now working on tab ${tab.id}: ${tab.title} (in the background; the user's view is unchanged)`;
+  }
   const tab = await chrome.tabs.update(Number(tabId), { active: true });
   await chrome.windows.update(tab.windowId, { focused: true });
   setCurrentTab(tab.id);
@@ -243,6 +261,11 @@ async function tabs_select({ tabId }) {
 async function navigate({ tabId, url }) {
   if (!url) throw new Error('url is required');
   const id = await resolveTab(tabId);
+  if (ownTabs() && !['back', 'forward', 'reload'].includes(url) && !(await inGroup(id))) {
+    // Leave the user's tab where it is: go there in a new AI tab instead.
+    const made = await tabs_create({ url });
+    return `${made}\nOpened in a new background tab in the AI group, so the user's tab ${id} stays as it was. Use this tab from now on.`;
+  }
   ensureAttached(id).catch(() => {});
   indicate(id, 'show');
   await waitForLoad(id, () => {
@@ -1017,6 +1040,12 @@ async function resolveTab(tabId) {
 
 function isControllable(url = '') {
   return !/^(chrome|edge|brave|about|devtools|chrome-extension):/.test(url) && !url.startsWith('https://chromewebstore.google.com');
+}
+
+async function inGroup(tabId) {
+  const group = await findGroup();
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  return !!(group && tab && tab.groupId === group.id);
 }
 
 async function findGroup() {

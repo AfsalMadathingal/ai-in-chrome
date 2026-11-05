@@ -177,6 +177,41 @@ async function tabLine(tabId) {
   return tab ? `[Tab ${tab.id}: ${tab.title || ''} — ${tab.url || ''}]` : '[No tab]';
 }
 
+// Tabs the AI opened earlier (the AI group), so it can pick up where it left off instead of starting over.
+async function aiTabsLine(tabId) {
+  const [group] = await chrome.tabGroups.query({ title: 'AI' }).catch(() => []);
+  const own = group ? (await chrome.tabs.query({ groupId: group.id })).filter((t) => t.id !== tabId).slice(-3) : [];
+  return own.length ? `[Your AI tabs: ${own.map((t) => `${t.id} ${clip(t.title || t.url, 60)}`).join(' · ')}]\n` : '';
+}
+
+const clip = (s, n) => (String(s || '').length > n ? `${String(s).slice(0, n - 1)}…` : String(s || ''));
+
+// A short look at the user's tab ({ key, text }), sent when the tab (or its page) changes: most questions are about it,
+// so the AI starts from what's on screen instead of searching or opening other tabs.
+async function pageGlance(tabId) {
+  const tab = await chrome.tabs.get(tabId).catch(() => null);
+  if (!tab || !/^(https?|file):/.test(tab.url || '')) return null;
+  const [res] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const sel = String(getSelection() || '').trim();
+      const desc = document.querySelector('meta[name="description"], meta[property="og:description"]')?.content || '';
+      const main = document.querySelector('main, article, [role="main"]') || document.body;
+      const text = (main?.innerText || '').replace(/\n{3,}/g, '\n\n').trim();
+      return { sel, desc, text };
+    },
+  }).catch(() => []);
+  const r = res?.result;
+  if (!r) return null;
+  return { key: `${tabId}|${tab.url}|${r.sel}`, text: [
+    '<page note="the user\'s tab right now; start here">',
+    r.sel && `Selected text: ${clip(r.sel, 1500)}`,
+    r.desc && `Description: ${clip(r.desc, 200)}`,
+    r.text && `Opening text:\n${clip(r.text, 1500)}`,
+    '</page>',
+  ].filter(Boolean).join('\n') };
+}
+
 // ---------- follow-ups typed while the AI works: queued, then sent together when it finishes ----------
 
 const queueMsg = (sid, c) => ({ type: 'queue', sid, items: (c.queue || []).map(({ id, text, thumbs }) => ({ id, text, images: thumbs?.length || 0 })) });
@@ -216,7 +251,17 @@ async function send(msg) {
   // What the AI gets but the chat doesn't show: news from @agent tasks, and a nudge for the suggested reply.
   const notes = c.parent ? '' : bgNotes(c);
   const nudge = kind === 'terminal' ? '' : '\n\n<reminder>End your reply with <suggest>…</suggest> (the user\'s likely next message).</reminder>';
-  const full = `${notes}${line}\n${text}${nudge}`;
+  // The page glance goes out with the first message about a page, or when the page or selection changed.
+  let glance = '';
+  if (!c.parent && tabId != null) {
+    const g = await pageGlance(tabId);
+    if (g && g.key !== c.lastGlance) {
+      c.lastGlance = g.key;
+      glance = `${g.text}\n`;
+    }
+  }
+  const aiTabs = c.parent ? '' : await aiTabsLine(tabId);
+  const full = `${notes}${line}\n${aiTabs}${glance}${text}${nudge}`;
 
   if (kind === 'terminal') {
     await emit(sid, { t: 'busy', on: true });

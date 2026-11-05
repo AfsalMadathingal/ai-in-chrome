@@ -19,7 +19,7 @@ let attachments = []; // { mediaType, data, thumb }
 let chatList = [];
 let workflows = []; // saved replays: { name, title, steps, created }
 let lastUserTs = 0;
-let settings = { agent: 'claude', mode: 'ask', cwd: '~', model: '', ollamaModel: '', ollamaUrl: '', theme: 'system', voiceFix: true, shortcuts: [] };
+let settings = { agent: 'claude', mode: 'ask', cwd: '~', model: '', ollamaModel: '', ollamaUrl: '', theme: 'system', voiceFix: true, tabs: 'group', shortcuts: [] };
 
 // Per-render state for the assistant turn being built.
 let turn = null;
@@ -960,6 +960,7 @@ function renderAgentUI() {
   $('modeSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', b.dataset.v === settings.mode));
   renderThemes();
   $('voiceFixSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', b.dataset.v === String(settings.voiceFix !== false)));
+  $('tabsSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', b.dataset.v === (settings.tabs || 'group')));
 
   const h = $('agentHint');
   if (settings.agent === 'terminal') h.innerHTML = 'In any terminal AI connected to the <code>ai-in-chrome</code> MCP server, say: <code>listen to the AI in Chrome side panel</code>.';
@@ -1844,6 +1845,7 @@ async function init() {
   $('historySearch').addEventListener('input', renderHistory);
   $('modeSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('mode', b.dataset.v)));
   $('voiceFixSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('voiceFix', b.dataset.v === 'true')));
+  $('tabsSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('tabs', b.dataset.v)));
   $('cwd').value = settings.cwd;
   $('model').addEventListener('change', () => setSetting(isOllama() ? 'ollamaModel' : 'model', $('model').value.trim()));
   for (const id of ['cwd', 'ollamaUrl']) $(id).addEventListener('change', () => setSetting(id, $(id).value.trim()));

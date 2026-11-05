@@ -241,6 +241,8 @@ Pick the AI from the menu at the top. The panel shows its work as it goes:
 
 - **Thinking:** the AI's reasoning appears in a block you can expand, with how long it thought.
 - **Steps:** each browser action is a line in a timeline in plain words ("Click “Sign in” button", "Type “hello” into “Email” field"), with its status and timing, and a one-line summary when the group finishes. A failed step says why right under it. Screenshots appear as thumbnails; click one to enlarge it. Expand a step to see its input and output.
+- **Starts from your tab:** each chat is about the tab you're on. When the page (or your text selection) changes, the AI gets a short look at it with your message, so it reads what's on screen before searching the web or opening other tabs.
+- **Leaves your tabs alone:** by default the AI works in its own purple "AI" tab group. Tabs it opens stay in the background, `tabs_select` doesn't bring a tab to the front, and `navigate` on one of your tabs opens a new AI tab instead, so you can keep using Chrome while it works. It still reads the tab you're on and acts on it when you ask. Settings › Tabs › "Can use my tabs" switches back to the old behavior.
 - **Plans:** when the AI makes a to-do list (Claude's TodoWrite or Codex's plan), it appears as a checklist that updates as the work goes.
 - **Answers:** Markdown with tables, quotes and code blocks; each code block and answer has a copy button.
 - **Permissions:** in "Ask before acting" mode, a card describes the action (for example "Click “Checkout” button", on example.com) with Allow once, Always allow and Deny. "Act without asking" covers browser actions and web search/fetch; shell commands and file changes still ask.
@@ -281,7 +283,7 @@ aichrome install-skill               # teaches Claude how to use it well
 
 | Tool | What it does |
 |---|---|
-| `tabs_context`, `tabs_create`, `tabs_select`, `tabs_close` | List, open (in the AI group), switch and close tabs |
+| `tabs_context`, `tabs_create`, `tabs_select`, `tabs_close` | List, open (in the AI group, in the background), switch and close tabs |
 | `navigate` | Go to a URL, or `back` / `forward` / `reload` |
 | `computer` | `screenshot`, `left_click`, `right_click`, `double_click`, `triple_click`, `hover`, `left_click_drag`, `type`, `key`, `scroll`, `scroll_to`, `wait`, `zoom` |
 | `read_page`, `find` | Accessibility tree with `ref_N` refs; find elements by words |
