@@ -12,7 +12,7 @@ side panel / aichrome CLI / any MCP client ──► local bridge (socket or nam
 
 ## Why AI in Chrome
 
-- **Uses the AI you already pay for, or a free local one.** The side panel runs your logged-in Claude Code or Codex, or an open-source model on your own computer through Ollama. No API key, no per-token bill, no separate account for the extension.
+- **Uses the AI you already pay for, or a free local one.** The side panel runs your logged-in Claude Code or Codex, an open-source model on your own computer through Ollama, or Apple's on-device model on a Mac with Apple Intelligence. No API key, no per-token bill, no separate account for the extension.
 - **Your real browser, logged in as you.** It drives the Chrome you're using, with your sessions, cookies and extensions, not a fresh headless profile.
 - **Works the way Claude in Chrome does.** Real mouse and keyboard events through the DevTools Protocol, an accessibility tree with `ref_N` element refs, an agent tab group and an on-page indicator showing where the AI acts.
 - **No blocked sites, any AI.** No domain blocklist and no vendor lock-in: use Claude, Codex, Cursor, Gemini CLI, Claude Desktop, or no AI at all.
@@ -25,7 +25,7 @@ side panel / aichrome CLI / any MCP client ──► local bridge (socket or nam
 
 | Area | What you get |
 |---|---|
-| **Side panel chat** | Claude Code / Codex / Ollama (local models) / Terminal AI picker, streaming answers, thinking blocks, a step timeline with screenshots, plan checklists, permission cards, chat history, image attachments, slash commands, saved prompts, themes (light, dark, and VS Code-style Code Dark / Code Light) |
+| **Side panel chat** | Claude Code / Codex / Ollama (local models) / Apple Intelligence (on-device) / Terminal AI picker, streaming answers, thinking blocks, a step timeline with screenshots, plan checklists, permission cards, chat history, image attachments, slash commands, saved prompts, themes (light, dark, and VS Code-style Code Dark / Code Light) |
 | **Browser control** | Tabs, navigation, clicks, typing, keys, scrolling, drag, hover, zoom, screenshots (≤1568 px), form filling, page text, JavaScript |
 | **Page understanding** | Accessibility tree with `ref_N` refs (handles `display: contents` and hidden duplicates), `find` by words |
 | **Network & debugging** | Full capture with real Cookie and Authorization headers, bodies, WebSocket frames; copy as curl or fetch; replay with edits; `http_request` as the logged-in user (in page, from the extension with no CORS limits, or from Node); cookies incl. HttpOnly; localStorage and sessionStorage; live block, mock, rewrite and delay rules; HAR export; console logs and errors |
@@ -41,7 +41,7 @@ A snapshot from October 2026. See each project for its current state.
 | | AI in Chrome | Claude in Chrome (official) | Clones of the official code (claw-in-chrome, claude-for-chrome) | Clean-room rebuilds (open-claude-in-chrome) | Generic MCP browsers (Playwright MCP, Chrome DevTools MCP) |
 |---|---|---|---|---|---|
 | Chat side panel | ✅ | ✅ | ✅ | ❌ | ❌ |
-| AI in the panel | Your Claude Code / Codex login, or local models via Ollama | Claude plan | API key, per token | — | — |
+| AI in the panel | Your Claude Code / Codex login, or local models via Ollama or Apple Intelligence | Claude plan | API key, per token | — | — |
 | Any MCP client | ✅ | Claude only | Partly | ✅ | ✅ |
 | Your logged-in Chrome by default | ✅ | ✅ | ✅ | ✅ | ❌ separate profile by default |
 | Blocked sites | None | Some categories blocked | None | None | None |
@@ -235,6 +235,7 @@ Click the toolbar icon (or press Cmd/Ctrl+Shift+E) to open a chat panel next to 
 - **Claude Code**: runs your logged-in `claude` in the background. It controls the tab through the same tools and asks in the panel before clicking, typing or navigating, unless you pick "Act without asking".
 - **Codex**: runs your logged-in `codex` (not yet tested end to end).
 - **Ollama**: an open-source model running on your own computer (free, offline, private). Install [Ollama](https://ollama.com), pull a model that supports tools, for example `ollama pull qwen3`, and pick **Ollama** in the panel. It lists your installed models and picks a tool-capable one; you can change the model, and the Ollama address if it runs elsewhere, in Settings. Small models are slower and make more mistakes than Claude or Codex on long tasks; 8B+ models work best.
+- **Apple Intelligence**: Apple's on-device Foundation Model, built into macOS 26 and later with Apple Intelligence turned on (the `fm` command). Free, private and offline; nothing to install. The native host starts `fm serve` on port 19760 (`AICHROME_FM_PORT` to change it) the first time you use it. It's a small model with a short context, so it gets simple tools (navigate, find, click, type, press a key, scroll, read the page) and works best on short tasks such as searching, reading and summarizing a page; long multi-step tasks are better on Claude or Codex. Text only: attached images are skipped and it can't see screenshots. Only the `system` model works from the panel; `pcc` (Private Cloud Compute) is limited by macOS to the Terminal app.
 - **Terminal AI**: an AI already open in your terminal answers the panel. Tell it "listen to the AI in Chrome side panel" and it uses `sidepanel_wait` / `sidepanel_reply` (not yet tested end to end).
 
 Pick the AI from the menu at the top. The panel shows its work as it goes:
@@ -253,7 +254,7 @@ The composer:
 
 - **Images:** paste, drag in, or attach an image, or capture the current tab with the camera button. They are sent to Claude Code or Codex with your message.
 - **Voice:** click the mic and speak; your words appear as you talk and a short pause sends them (Esc cancels). Before sending, a separate small model fixes words the recognizer misheard (for example "cloud code" → "Claude Code"), using the page and the chat for context; the changed words animate in, with *use original* and *edit* for a moment before it sends. It uses Chrome's built-in AI (Gemini Nano) when available, otherwise Ollama or a one-shot Claude Haiku; turn it off in Settings → Voice. The first time, a tab opens to allow the microphone, since a side panel can't ask. Speech recognition is Chrome's, which needs an internet connection.
-- **@agents:** type `@` to pick one of your Claude Code subagents (`~/.claude/agents`, or the working folder's `.claude/agents`) or another AI (`@claude`, `@codex`, `@ollama`), then `@name task`. It runs in its own background chat and its own tab, so your chat and your tab stay free: a compact card shows its progress and, at the end, its result. Click the card to open the full run. If it needs permission, the card appears in your chat. Your chat's AI is told when a task starts and gets its result with your next message, so you can ask it to use the report.
+- **@agents:** type `@` to pick one of your Claude Code subagents (`~/.claude/agents`, or the working folder's `.claude/agents`) or another AI (`@claude`, `@codex`, `@ollama`, `@fm`), then `@name task`. It runs in its own background chat and its own tab, so your chat and your tab stay free: a compact card shows its progress and, at the end, its result. Click the card to open the full run. If it needs permission, the card appears in your chat. Your chat's AI is told when a task starts and gets its result with your next message, so you can ask it to use the report.
 - **Keep chatting while it works:** type while the AI is busy and your message is queued above the box (remove it with ×), then sent as soon as the current task finishes; several queued messages go together. **Send now** stops the current task and sends right away; Esc stops it and puts your queued text back in the box.
 - **Slash commands:** type `/` for `/new`, `/history`, `/settings`, `/screenshot`, `/voice`, your saved workflows and your own saved shortcuts (reusable prompts you add in Settings).
 - **Permission mode:** the pill next to Send switches between "Ask before acting" and "Act without asking".
@@ -263,7 +264,7 @@ The composer:
 
 For tasks that need judgment each time, `/skill name` asks the AI to write a Claude Code skill (`~/.claude/skills/name/SKILL.md`) with the exact steps, so next time it follows the recipe instead of exploring the page.
 
-**History** (clock icon) lists past chats, grouped by day, with search and delete. **Settings** (gear icon): AI, permission mode, working folder, model, theme (system, light, dark, or Code Dark / Code Light: VS Code colors, where answers read like an editor and code blocks are syntax highlighted), saved workflows and saved shortcuts. After installing or updating, run `aichrome install` once so the panel can find `claude` / `codex`.
+**History** (clock icon) lists past chats, grouped by day, with search and delete. **Settings** (gear icon): AI, permission mode, working folder, model (a list per AI: each AI remembers its own, and *Custom…* takes any model name), theme (system, light, dark, or Code Dark / Code Light: VS Code colors, where answers read like an editor and code blocks are syntax highlighted), saved workflows and saved shortcuts. After installing or updating, run `aichrome install` once so the panel can find `claude` / `codex`.
 
 ## Use it with AI
 
