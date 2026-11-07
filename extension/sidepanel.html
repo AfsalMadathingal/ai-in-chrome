@@ -95,8 +95,8 @@
       </section>
       <section>
         <h3>Run</h3>
-        <label class="field">Model <input id="model" list="models" placeholder="default" spellcheck="false" /></label>
-        <datalist id="models"></datalist>
+        <label class="field">Model <select id="modelSelect"></select></label>
+        <label class="field" id="modelCustomField" hidden>Custom model name <input id="model" placeholder="model name" spellcheck="false" /></label>
         <label class="field" id="ollamaUrlField" hidden>Ollama address <input id="ollamaUrl" placeholder="http://127.0.0.1:11434" spellcheck="false" /></label>
         <label class="field" id="cwdField">Working folder <input id="cwd" placeholder="~" spellcheck="false" /></label>
       </section>

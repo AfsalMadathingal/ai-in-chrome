@@ -19,7 +19,7 @@ let attachments = []; // { mediaType, data, thumb }
 let chatList = [];
 let workflows = []; // saved replays: { name, title, steps, created }
 let lastUserTs = 0;
-let settings = { agent: 'claude', mode: 'ask', cwd: '~', model: '', ollamaModel: '', ollamaUrl: '', theme: 'system', voiceFix: true, tabs: 'group', shortcuts: [] };
+let settings = { agent: 'claude', mode: 'ask', cwd: '~', models: {}, ollamaUrl: '', theme: 'system', voiceFix: true, tabs: 'group', shortcuts: [] };
 
 // Per-render state for the assistant turn being built.
 let turn = null;
@@ -894,30 +894,49 @@ const AGENTS = {
   claude: { name: 'Claude Code', desc: 'Your logged-in Claude Code, run in the background', icon: 'spark' },
   codex: { name: 'Codex', desc: 'Your logged-in Codex CLI', icon: 'code' },
   ollama: { name: 'Ollama', desc: 'Open-source models running on your computer', icon: 'bot' },
+  fm: { name: 'Apple Intelligence', desc: 'Apple Foundation Models, on-device on your Mac', icon: 'bot' },
   terminal: { name: 'Terminal AI', desc: 'An AI already open in your terminal answers', icon: 'terminal' },
 };
 
-// Model suggestions per AI. Ollama lists the models installed on this computer.
+// Models per AI. Ollama lists the models installed on this computer; Apple Intelligence what `fm` offers.
+// Each AI keeps its own choice, so a Claude model is never sent to Codex, Ollama or Apple Intelligence.
 const MODEL_HINTS = { claude: ['sonnet', 'opus', 'haiku'], codex: ['gpt-5-codex', 'gpt-5'] };
+const MODEL_LABELS = { sonnet: 'Sonnet', opus: 'Opus', haiku: 'Haiku', system: 'On-device (system)' };
+const CUSTOM = '__custom__';
 const isOllama = () => settings.agent === 'ollama';
-const currentModel = () => (isOllama() ? settings.ollamaModel : settings.model);
+const modelList = (k = settings.agent) => (k === 'ollama' ? available.ollama?.models || [] : k === 'fm' ? available.fm?.models || ['system'] : MODEL_HINTS[k] || []);
+const hasDefault = (k = settings.agent) => k === 'claude' || k === 'codex'; // their CLIs pick a model when none is given
+const currentModel = () => settings.models?.[settings.agent] || '';
+function setModel(value) {
+  settings.models = { ...settings.models, [settings.agent]: value };
+  chrome.storage.local.set({ panelSettings: settings });
+  renderModelField();
+}
 // Tool calling is what lets a model drive the browser; prefer families known to support it.
 const TOOL_MODELS = /^(qwen3|qwen2\.5|llama3\.[123]|gpt-oss|mistral|mistral-small|granite3|command-r|hermes3|devstral|magistral|deepseek-v3)/i;
 
 function renderModelField() {
-  const models = isOllama() ? available.ollama?.models || [] : MODEL_HINTS[settings.agent] || [];
-  $('models').innerHTML = models.map((m) => `<option value="${esc(m)}"></option>`).join('');
-  if (document.activeElement !== $('model')) $('model').value = currentModel() || '';
-  $('model').placeholder = isOllama() ? (models[0] || 'e.g. qwen3') : 'default';
+  const k = settings.agent;
+  const models = modelList(k);
   $('ollamaUrlField').hidden = !isOllama();
-  $('cwdField').hidden = isOllama();
+  $('cwdField').hidden = isOllama() || k === 'fm';
   if (document.activeElement !== $('ollamaUrl')) $('ollamaUrl').value = settings.ollamaUrl || '';
-  // First time on Ollama: pick an installed model that can use tools.
-  if (isOllama() && !settings.ollamaModel && models.length) {
-    settings.ollamaModel = models.find((m) => TOOL_MODELS.test(m)) || models[0];
+  // No default model for Ollama / Apple Intelligence: pick one (Ollama: an installed model that can use tools).
+  if (!hasDefault(k) && !currentModel() && models.length) {
+    settings.models = { ...settings.models, [k]: models.find((m) => TOOL_MODELS.test(m)) || models[0] };
     chrome.storage.local.set({ panelSettings: settings });
-    $('model').value = settings.ollamaModel;
   }
+  const cur = currentModel();
+  const custom = cur && !models.includes(cur);
+  const opt = (v, label, sel) => `<option value="${esc(v)}"${sel ? ' selected' : ''}>${esc(label)}</option>`;
+  $('modelSelect').innerHTML = [
+    hasDefault(k) ? opt('', 'Default', !cur) : '',
+    !hasDefault(k) && !models.length ? opt('', k === 'ollama' ? 'No models installed' : 'Not available', !cur) : '',
+    ...models.map((m) => opt(m, MODEL_LABELS[m] || m, m === cur)),
+    k === 'fm' ? '' : opt(CUSTOM, custom ? `Custom: ${cur}` : 'Custom…', custom),
+  ].join('');
+  $('modelCustomField').hidden = !custom;
+  if (document.activeElement !== $('model')) $('model').value = custom ? cur : '';
 }
 const MODES = {
   ask: { name: 'Ask before acting', short: 'Ask', desc: 'Approve clicks, typing and navigation', icon: 'shield' },
@@ -929,6 +948,7 @@ function agentState(k) {
   if (k === 'terminal') return terminal.listening ? 'on' : '';
   if (!(k in available)) return '';
   if (k === 'ollama') return available.ollama?.models?.length ? 'on' : 'off';
+  if (k === 'fm') return available.fm ? 'on' : 'off';
   return available[k] ? 'on' : 'off';
 }
 
@@ -971,6 +991,10 @@ function renderAgentUI() {
       : !o.models.length
         ? `Ollama is running at <code>${esc(o.url)}</code> but has no models. Run <code>ollama pull qwen3</code>.`
         : `Local models at <code>${esc(o.url)}</code>. Pick one that supports tools (qwen3, llama3.1, gpt-oss…) so it can control the browser.`;
+  } else if (settings.agent === 'fm') {
+    h.innerHTML = available.fm
+      ? 'Apple\'s on-device model, private and free. It\'s small: good for reading and summarizing the page and simple steps, weaker at long tasks. Text only.'
+      : 'Needs macOS 26 or later with Apple Intelligence turned on (the <code>fm</code> command).';
   } else if (settings.agent === 'claude') h.innerHTML = available.claude ? `Uses <code>${esc(available.claude)}</code>.` : 'Claude Code not found yet. Install it, then run <code>aichrome install</code> again.';
   else h.innerHTML = available.codex ? `Uses <code>${esc(available.codex)}</code>.` : 'Codex not found yet. Install it, then run <code>aichrome install</code> again.';
   renderModelField();
@@ -1132,7 +1156,7 @@ let slashItems = [];
 
 // @name: the AIs you can run a background task on, and your Claude Code subagents.
 function agentChoices() {
-  const kinds = ['claude', 'codex', 'ollama'].filter((k) => agentState(k) === 'on')
+  const kinds = ['claude', 'codex', 'ollama', 'fm'].filter((k) => agentState(k) === 'on')
     .map((k) => ({ name: k, desc: `Run a task on ${AGENTS[k].name} in the background`, icon: AGENTS[k].icon }));
   const subs = available.claude ? (available.subagents || []).map((a) => ({ name: a.name, desc: a.description || 'Claude Code subagent', icon: 'bot' })) : [];
   return [...subs, ...kinds].map((a) => ({ ...a, at: true, run: () => fill(`@${a.name} `) }));
@@ -1815,6 +1839,13 @@ async function init() {
   windowId = (await chrome.windows.getCurrent()).id;
   const stored = await chrome.storage.local.get(['panelSettings', `panelChat:${windowId}`]);
   settings = { ...settings, ...stored.panelSettings };
+  // Older versions kept one model for Claude/Codex and one for Ollama; move them to per-AI choices.
+  if (!stored.panelSettings?.models) {
+    const old = stored.panelSettings || {};
+    settings.models = { ...(old.ollamaModel ? { ollama: old.ollamaModel } : {}), ...(old.model && ['claude', 'codex'].includes(old.agent) ? { [old.agent]: old.model } : {}) };
+  }
+  delete settings.model;
+  delete settings.ollamaModel;
   if (!Array.isArray(settings.shortcuts)) settings.shortcuts = [];
   sid = stored[`panelChat:${windowId}`];
   if (!sid) {
@@ -1847,7 +1878,12 @@ async function init() {
   $('voiceFixSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('voiceFix', b.dataset.v === 'true')));
   $('tabsSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('tabs', b.dataset.v)));
   $('cwd').value = settings.cwd;
-  $('model').addEventListener('change', () => setSetting(isOllama() ? 'ollamaModel' : 'model', $('model').value.trim()));
+  $('modelSelect').addEventListener('change', () => {
+    if ($('modelSelect').value !== CUSTOM) return setModel($('modelSelect').value);
+    $('modelCustomField').hidden = false;
+    $('model').focus();
+  });
+  $('model').addEventListener('change', () => setModel($('model').value.trim()));
   for (const id of ['cwd', 'ollamaUrl']) $(id).addEventListener('change', () => setSetting(id, $(id).value.trim()));
   $('shortcutForm').addEventListener('submit', (e) => {
     e.preventDefault();
