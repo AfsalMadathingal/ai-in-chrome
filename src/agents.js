@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { CLI, IS_WINDOWS, expandHome } from './paths.js';
 import { ollamaModels, runOllamaTurn, OLLAMA_URL } from './ollama.js';
+import { FM_BIN, FM_MODELS, runFmTurn, fmQuick, stopFmServer } from './fm.js';
 
 const SYSTEM_PROMPT = `You are chatting with the user through the AI in Chrome side panel in their real, logged-in Chrome browser.
 Control the browser with the ai-in-chrome MCP tools (tabs_context, navigate, computer, read_page, find, form_input, get_page_text, network tools…).
@@ -129,7 +130,7 @@ export class Agents {
 
   async available(ollamaUrl, cwd) {
     const models = await ollamaModels(ollamaUrl);
-    return { claude: which('claude'), codex: which('codex'), ollama: models ? { url: ollamaUrl || OLLAMA_URL, models } : null, subagents: listSubagents(cwd) };
+    return { claude: which('claude'), codex: which('codex'), ollama: models ? { url: ollamaUrl || OLLAMA_URL, models } : null, fm: FM_BIN ? { bin: FM_BIN, models: FM_MODELS } : null, subagents: listSubagents(cwd) };
   }
 
   handle(msg) {
@@ -154,7 +155,7 @@ export class Agents {
     if (s && (s.kind !== opts.kind || s.cwd !== opts.cwd || s.mode !== opts.mode || s.model !== opts.model || s.url !== opts.url)) {
       s.proc?.kill();
       s.abort?.abort();
-      // Ollama keeps its history here, so it survives a model or mode change; a different AI starts fresh.
+      // Ollama and Apple Foundation Models keep their history here, so it survives a model or mode change; a different AI starts fresh.
       s = { ...s, ...opts, proc: null, abort: null, sessionId: s.kind === opts.kind ? s.sessionId : null, messages: s.kind === opts.kind ? s.messages : null, think: undefined };
       this.sessions.set(msg.sid, s);
     }
@@ -175,6 +176,7 @@ export class Agents {
     if (s.kind === 'claude') this.sendClaude(s, msg.text, images);
     else if (s.kind === 'codex') this.sendCodex(s, msg.text, images);
     else if (s.kind === 'ollama') this.sendOllama(s, msg.text, images);
+    else if (s.kind === 'fm') this.sendFm(s, msg.text, images);
     else throw new Error(`Unknown agent "${s.kind}"`);
   }
 
@@ -185,7 +187,7 @@ export class Agents {
       // Ask Claude Code to interrupt the turn; kill it if it doesn't stop soon (the session resumes next time).
       s.proc.stdin.write(JSON.stringify({ type: 'control_request', request_id: `int-${Date.now()}`, request: { subtype: 'interrupt' } }) + '\n');
       s.stopTimer = setTimeout(() => s.busy && s.proc?.kill(), 3000);
-    } else if (s.kind === 'ollama') s.abort?.abort();
+    } else if (s.kind === 'ollama' || s.kind === 'fm') s.abort?.abort();
     else s.proc?.kill();
   }
 
@@ -224,6 +226,7 @@ export class Agents {
   // One small, tool-less model call: Ollama when the chat uses it, otherwise a one-shot Claude Haiku. null on failure.
   async quick(system, user, { kind, model, ollamaUrl }) {
     try {
+      if (kind === 'fm') return await fmQuick(system, user);
       if (kind === 'ollama' && model) {
         const res = await fetch(`${(ollamaUrl || OLLAMA_URL).replace(/\/+$/, '')}/api/chat`, {
           method: 'POST',
@@ -424,7 +427,24 @@ export class Agents {
       });
   }
 
+  // ---------- Apple Foundation Models: the on-device model via `fm serve`; loop in src/fm.js ----------
+  sendFm(s, text, images) {
+    const abort = new AbortController();
+    s.abort = abort;
+    this.log('agent fm run', s.sid, s.model || 'system');
+    runFmTurn(s, text, images, { emit: (ev) => this.emit(s.sid, ev), signal: abort.signal, log: this.log })
+      .then((r) => this.finish(s, { t: 'done', ms: r.ms, tokens: r.tokens || undefined, turns: r.turns }))
+      .catch((e) => {
+        if (abort.signal.aborted || e.name === 'AbortError') return this.finish(s, { t: 'stopped' });
+        this.finish(s, { t: 'error', message: e.message });
+      })
+      .finally(() => {
+        if (s.abort === abort) s.abort = null;
+      });
+  }
+
   shutdown() {
+    stopFmServer();
     for (const s of this.sessions.values()) s.proc?.kill();
   }
 }
