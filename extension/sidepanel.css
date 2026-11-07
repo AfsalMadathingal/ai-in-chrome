@@ -360,6 +360,23 @@ main { flex: 1; overflow-y: auto; padding: 16px 14px 8px; display: flex; flex-di
 .perm .result { margin-top: 8px; color: var(--muted); font-size: 12.5px; display: flex; align-items: center; gap: 6px; }
 .perm.resolved { background: var(--surface); border-color: var(--line); animation: none; }
 .perm .result { animation: slide-in .2s ease-out; }
+/* AskUserQuestion */
+.askq .aq { border: 0; margin: 12px 0 0; padding: 0; min-width: 0; }
+.askq legend { padding: 0; margin-bottom: 6px; font-size: 13px; font-weight: 550; line-height: 1.4; }
+.askq legend .hd { display: inline-block; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--accent); background: var(--surface); border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; margin-right: 6px; vertical-align: 1px; }
+.askq legend small { font-weight: 400; color: var(--muted); }
+.askq .opt { display: flex; gap: 9px; align-items: flex-start; width: 100%; text-align: left; padding: 7px 9px; margin-top: 4px; border-radius: 8px; background: var(--surface); border: 1px solid var(--line); transition: border-color .12s, background .12s; }
+.askq .opt:hover { border-color: var(--line-strong); }
+.askq .opt.on { border-color: var(--accent); }
+.askq .opt b { display: block; font-weight: 550; font-size: 13px; }
+.askq .opt small { display: block; color: var(--muted); font-size: 12px; line-height: 1.4; margin-top: 1px; }
+.askq .opt .mk { width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--line-strong); flex: none; margin-top: 2px; }
+.askq .opt.on .mk { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 2.5px var(--surface); }
+.askq .other { width: 100%; margin-top: 4px; padding: 7px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--text); font: inherit; font-size: 13px; }
+.askq .other:focus { outline: none; border-color: var(--accent); }
+.askq .aq-done { margin-top: 8px; font-size: 12.5px; }
+.askq .aq-done .ql { display: block; color: var(--muted); }
+.askq .aq-done .qa { display: block; font-weight: 550; }
 
 /* subagent work, nested under its step */
 .step > .live { margin: -3px 10px 4px 41px; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -457,6 +474,18 @@ footer { position: relative; padding: 4px 12px 12px; background: var(--bg); }
 .tabchip { display: flex; align-items: center; gap: 5px; min-width: 0; max-width: 40%; height: 26px; padding: 0 8px; margin-left: 2px; border-radius: 7px; background: var(--sunken); font-size: 11.5px; color: var(--muted); }
 .tabchip img { width: 13px; height: 13px; flex: none; border-radius: 2px; }
 .tabchip span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tabchip:hover { background: var(--hover); color: var(--text); }
+.mentions { display: flex; gap: 6px; flex-wrap: wrap; padding: 2px 0 8px; }
+.mention { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; height: 24px; padding: 0 4px 0 7px; border-radius: 7px; background: var(--sunken); border: 1px solid var(--line); font-size: 12px; }
+.mention:first-child { border-color: var(--accent); }
+.mention img { width: 13px; height: 13px; flex: none; border-radius: 2px; }
+.mention span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; }
+.mention button { width: 16px; height: 16px; display: grid; place-items: center; border-radius: 4px; color: var(--muted); flex: none; }
+.mention button:hover { background: var(--hover); }
+.mention button svg { width: 10px; height: 10px; stroke-width: 3; }
+.slash .tabitem .ico img { width: 14px; height: 14px; border-radius: 2px; }
+.slash .tabitem .t { font-weight: 500; }
+.slash .tabitem .t small { font-weight: 400; font-size: 11px; color: var(--accent); }
 .send { width: 30px; height: 30px; margin-left: 4px; flex: none; border-radius: 9px; background: var(--accent); color: var(--accent-text); display: grid; place-items: center; transition: background .2s, color .2s, opacity .15s, transform .1s; }
 .send svg { animation: pop-in .2s ease-out; }
 .send:hover { background: var(--accent-hover); }

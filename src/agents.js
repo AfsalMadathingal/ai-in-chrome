@@ -167,6 +167,11 @@ export class Agents {
   }
 
   send(msg) {
+    // Claude Code takes a message mid-turn: it reads it at its next step, like typing while it works in the terminal.
+    const running = this.sessions.get(msg.sid);
+    if (running?.busy && running.kind === 'claude' && running.proc) {
+      return this.sendClaude(running, msg.text, Array.isArray(msg.images) ? msg.images.filter((i) => i?.data) : []);
+    }
     const s = this.session(msg);
     if (s.busy) throw new Error('Still working on the previous message. Stop it first.');
     if (!fs.existsSync(s.cwd)) throw new Error(`Working folder does not exist: ${s.cwd}`);
@@ -183,6 +188,7 @@ export class Agents {
   stop(sid) {
     const s = this.sessions.get(sid);
     if (!s?.busy) return;
+    s.unread = 0;
     if (s.kind === 'claude' && s.proc) {
       // Ask Claude Code to interrupt the turn; kill it if it doesn't stop soon (the session resumes next time).
       s.proc.stdin.write(JSON.stringify({ type: 'control_request', request_id: `int-${Date.now()}`, request: { subtype: 'interrupt' } }) + '\n');
@@ -264,6 +270,7 @@ export class Agents {
     const content = images.length
       ? [...images.map((i) => ({ type: 'image', source: { type: 'base64', media_type: i.mediaType || 'image/png', data: i.data } })), { type: 'text', text }]
       : text;
+    s.unread = (s.unread || 0) + 1; // until Claude Code echoes it back (--replay-user-messages)
     s.proc.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content } }) + '\n');
   }
 
@@ -275,10 +282,12 @@ export class Agents {
       '--append-system-prompt', SYSTEM_PROMPT,
       '--mcp-config', this.mcpConfig(),
       '--permission-prompt-tool', 'mcp__ai-in-chrome__approve_action',
+      '--replay-user-messages',
     ];
     if (s.model) args.push('--model', s.model);
     if (s.sessionId) args.push('--resume', s.sessionId);
     this.log('agent claude start', s.sid, s.cwd, s.sessionId || 'new');
+    s.unread = 0;
     const proc = launch(bin, args, { cwd: s.cwd, env: { ...process.env, AICHROME_SESSION: s.sid, AICHROME_MODE: s.mode }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     s.proc = proc;
     let out = '';
@@ -330,6 +339,10 @@ export class Agents {
       }
       return;
     }
+    if (m.type === 'user' && m.isReplay) {
+      s.unread = Math.max(0, (s.unread || 0) - 1);
+      return;
+    }
     if (m.type === 'user') {
       for (const c of Array.isArray(m.message?.content) ? m.message.content : []) {
         if (c.type === 'tool_result') {
@@ -340,6 +353,8 @@ export class Agents {
     }
     if (m.type === 'control_response') return;
     if (m.type === 'result') {
+      // A message sent after Claude's last step wasn't read in this turn; it starts the next one, so keep working.
+      if (s.unread > 0 && !m.is_error) return;
       const interrupted = m.subtype === 'error_during_execution' || /interrupt/i.test(m.result || '');
       return this.finish(s, interrupted ? { t: 'stopped' } : {
         t: 'done', ms: m.duration_ms, cost: m.total_cost_usd, turns: m.num_turns,

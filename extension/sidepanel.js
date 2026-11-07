@@ -16,6 +16,8 @@ let available = {};
 let terminal = { listening: false, recent: false };
 let lastModel = '';
 let attachments = []; // { mediaType, data, thumb }
+let mentions = []; // tabs picked with #: the AI works on the first, and is told about all of them
+let openTabs = [];
 let chatList = [];
 let workflows = []; // saved replays: { name, title, steps, created }
 let lastUserTs = 0;
@@ -399,6 +401,7 @@ function describe(name, inputStr) {
     case 'WebFetch': return { label: `Fetch ${c(hostOf(o.url || ''))}`, verb: 'Fetching a page', icon: 'link', done: 'fetched a page' };
     case 'WebSearch': case 'web_search': return { label: `Search the web for ${q(o.query || raw)}`, verb: 'Searching the web', icon: 'search', done: 'searched the web' };
     case 'Task': case 'Agent': return { label: `Subagent: ${esc(clip(o.description || o.prompt || '', 50))}`, verb: 'Subagent working', icon: 'bot', done: 'used a subagent' };
+    case 'AskUserQuestion': return { label: 'Ask you a question', verb: 'Asking you', icon: 'list', done: 'asked you' };
     case 'TodoWrite': return { label: 'Update the plan', verb: 'Planning', icon: 'list', done: 'updated the plan' };
     case 'sidepanel_reply': return { label: 'Reply', verb: 'Writing', icon: 'spark', done: 'replied' };
     default: {
@@ -689,6 +692,71 @@ function resolvePermission(ev) {
   card.querySelector('.btns')?.replaceWith(el('div', 'result', `${icon(ok ? 'check' : 'x')}${esc(text)}`));
 }
 
+// Claude's AskUserQuestion: pick an option per question (or type your own), then send them all back together.
+const questionEls = new Map();
+
+function renderQuestion(ev) {
+  ensureTurn();
+  closeThink(ev.ts);
+  closeStream();
+  const card = add(el('div', 'perm askq'), turn);
+  const qs = ev.questions || [];
+  card.innerHTML = `<div class="q"><span class="si">${icon('list')}</span><div><b>${qs.length > 1 ? `${qs.length} questions for you` : 'A question for you'}</b><small>${ev.agent ? `@${esc(ev.agent)} (background) asks. ` : ''}Pick an answer${qs.length > 1 ? ' for each' : ''}, or write your own.</small></div></div>
+    ${qs.map((q, i) => `<fieldset class="aq" data-i="${i}">
+      <legend>${q.header ? `<span class="hd">${esc(q.header)}</span>` : ''}${esc(q.question)}${q.multiSelect ? '<small> · pick any</small>' : ''}</legend>
+      ${q.options.map((o, j) => `<button type="button" class="opt" data-j="${j}"><span class="mk"></span><span><b>${esc(o.label)}</b>${o.description ? `<small>${esc(o.description)}</small>` : ''}</span></button>`).join('')}
+      <input class="other" placeholder="Other: type your own answer" spellcheck="true" />
+    </fieldset>`).join('')}
+    <div class="btns"><button class="btn primary" data-a="send" disabled>Send answers</button><button class="btn" data-a="skip">Skip</button></div>`;
+  const ready = () => [...card.querySelectorAll('.aq')].every((f) => f.querySelector('.opt.on') || f.querySelector('.other').value.trim());
+  const sendBtn = card.querySelector('[data-a="send"]');
+  card.querySelectorAll('.aq').forEach((f) => {
+    const q = qs[+f.dataset.i];
+    f.querySelectorAll('.opt').forEach((b) => b.addEventListener('click', () => {
+      if (!q.multiSelect) f.querySelectorAll('.opt').forEach((x) => x !== b && x.classList.remove('on'));
+      b.classList.toggle('on', q.multiSelect ? !b.classList.contains('on') : true);
+      if (!q.multiSelect) f.querySelector('.other').value = '';
+      sendBtn.disabled = !ready();
+    }));
+    f.querySelector('.other').addEventListener('input', (e) => {
+      if (!q.multiSelect && e.target.value.trim()) f.querySelectorAll('.opt').forEach((x) => x.classList.remove('on'));
+      sendBtn.disabled = !ready();
+    });
+    f.querySelector('.other').addEventListener('keydown', (e) => e.key === 'Enter' && !sendBtn.disabled && sendBtn.click());
+  });
+  sendBtn.addEventListener('click', () => {
+    const answers = {};
+    card.querySelectorAll('.aq').forEach((f) => {
+      const q = qs[+f.dataset.i];
+      const picked = [...f.querySelectorAll('.opt.on')].map((b) => q.options[+b.dataset.j].label);
+      const other = f.querySelector('.other').value.trim();
+      answers[q.question] = [...picked, other].filter(Boolean).join(', ');
+    });
+    port?.postMessage({ type: 'answer', id: ev.id, answers });
+  });
+  card.querySelector('[data-a="skip"]').addEventListener('click', () => port?.postMessage({ type: 'answer', id: ev.id }));
+  questionEls.set(ev.id, card);
+  if (!replaying) {
+    scrollDown();
+    card.querySelector('.opt, .other')?.focus();
+  }
+}
+
+function resolveQuestion(ev) {
+  const card = questionEls.get(ev.id);
+  if (!card) return;
+  card.classList.add('resolved');
+  card.querySelectorAll('.aq').forEach((f) => f.remove());
+  for (const [q, a] of Object.entries(ev.answers || {})) {
+    const d = el('div', 'aq-done', '<span class="ql"></span><span class="qa"></span>');
+    d.querySelector('.ql').textContent = q;
+    d.querySelector('.qa').textContent = `→ ${a}`;
+    card.querySelector('.btns').before(d);
+  }
+  const text = ev.answers ? 'Answered' : ev.reason === 'timeout' ? 'Timed out' : 'Skipped';
+  card.querySelector('.btns')?.replaceWith(el('div', 'result', `${icon(ev.answers ? 'check' : 'x')}${esc(text)}`));
+}
+
 function renderDone(ev) {
   const t = turn;
   closeTurn(ev.ts);
@@ -741,9 +809,9 @@ function renderUser(ev) {
   setSuggestion('');
   lastUserTs = ev.ts || 0;
   const m = el('div', `msg-user${ev.workflow ? ' wf' : ''}`);
-  if (ev.tab) {
+  for (const line of (ev.tab || '').split('\n').filter((l) => l.startsWith('['))) {
     const tab = el('div', 'tab', `${icon('globe')}<span></span>`);
-    tab.querySelector('span').textContent = ev.tab.replace(/^\[|\]$/g, '').replace(/^Tab \d+:\s*/, '');
+    tab.querySelector('span').textContent = line.replace(/^\[|\]$/g, '').replace(/^Tab \d+:\s*/, '');
     m.appendChild(tab);
   }
   if (ev.thumbs?.length) {
@@ -784,6 +852,8 @@ function render(ev) {
     case 'todo': return renderPlan(ev);
     case 'permission': return renderPermission(ev);
     case 'permission_done': return resolvePermission(ev);
+    case 'question': return renderQuestion(ev);
+    case 'question_done': return resolveQuestion(ev);
     case 'done': return renderDone(ev);
     case 'workflow_failed': return renderWorkflowFailed(ev);
     case 'sub_text': return addSubText(ev);
@@ -940,7 +1010,7 @@ function renderModelField() {
 }
 const MODES = {
   ask: { name: 'Ask before acting', short: 'Ask', desc: 'Approve clicks, typing and navigation', icon: 'shield' },
-  auto: { name: 'Act without asking', short: 'Auto', desc: 'Browser actions run without prompts', icon: 'bolt' },
+  auto: { name: 'Act without asking', short: 'Auto', desc: 'Browser actions and file edits run without prompts', icon: 'bolt' },
 };
 
 function agentState(k) {
@@ -1162,26 +1232,98 @@ function agentChoices() {
   return [...subs, ...kinds].map((a) => ({ ...a, at: true, run: () => fill(`@${a.name} `) }));
 }
 
+// #name: the open tabs you can point the AI at. Tabs in this window come first, most recently used first.
+function tabChoices(q, at) {
+  return openTabs
+    .filter((t) => !mentions.some((x) => x.id === t.id) && (!q || `${t.title} ${t.url}`.toLowerCase().includes(q)))
+    .sort((a, b) => (b.windowId === windowId) - (a.windowId === windowId) || (b.lastAccessed || 0) - (a.lastAccessed || 0))
+    .slice(0, 8)
+    .map((t) => ({ name: t.title || t.url, desc: hostOf(t.url || ''), favicon: favicon(t), tab: true, cur: t.id === currentTab?.id, run: () => mentionTab(t, at) }));
+}
+
 function updateSlash() {
-  const m = /^([/@])(\S*)$/.exec(input.value);
   const menu = $('slash');
-  if (!m) {
+  const m = /^([/@])(\S*)$/.exec(input.value);
+  const h = !m && /(?:^|\s)#([^\s#]*)$/.exec(input.value.slice(0, input.selectionStart));
+  if (!m && !h) {
     menu.hidden = true;
     return;
   }
-  const q = m[2].toLowerCase();
-  slashItems = (m[1] === '@' ? agentChoices() : commands()).filter((c) => c.name.toLowerCase().startsWith(q) || (q && c.desc.toLowerCase().includes(q)));
+  if (h) slashItems = tabChoices(h[1].toLowerCase(), input.selectionStart - h[1].length - 1);
+  else {
+    const q = m[2].toLowerCase();
+    slashItems = (m[1] === '@' ? agentChoices() : commands()).filter((c) => c.name.toLowerCase().startsWith(q) || (q && c.desc.toLowerCase().includes(q)));
+  }
   if (!slashItems.length) {
     menu.hidden = true;
     return;
   }
   slashSel = Math.min(slashSel, slashItems.length - 1);
-  menu.innerHTML = slashItems.map((c, i) => `<button class="item${i === slashSel ? ' sel' : ''}" data-i="${i}" role="option"><span class="ico">${icon(c.icon)}</span><span><span class="t"><code>${c.at ? '@' : '/'}${esc(c.name)}</code></span><span class="d">${esc(clip(c.desc, 70))}</span></span></button>`).join('');
+  menu.innerHTML = slashItems.map((c, i) => c.tab
+    ? `<button class="item tabitem${i === slashSel ? ' sel' : ''}" data-i="${i}" role="option"><span class="ico"><img alt="" src="${esc(c.favicon)}" /></span><span><span class="t">${esc(clip(c.name, 60))}${c.cur ? '<small>this tab</small>' : ''}</span><span class="d">${esc(clip(c.desc, 60))}</span></span></button>`
+    : `<button class="item${i === slashSel ? ' sel' : ''}" data-i="${i}" role="option"><span class="ico">${icon(c.icon)}</span><span><span class="t"><code>${c.at ? '@' : '/'}${esc(c.name)}</code></span><span class="d">${esc(clip(c.desc, 70))}</span></span></button>`).join('');
   menu.querySelectorAll('.item').forEach((b) => b.addEventListener('mousedown', (e) => {
     e.preventDefault();
     runSlash(+b.dataset.i);
   }));
   menu.hidden = false;
+}
+
+// Swap the "#query" typed at `at` for a chip naming that tab.
+function mentionTab(tab, at) {
+  const end = input.selectionStart;
+  if (at >= 0 && input.value[at] === '#') input.value = (input.value.slice(0, at) + input.value.slice(end)).replace(/^\s+/, '');
+  if (!mentions.some((t) => t.id === tab.id)) mentions.push(tab);
+  renderMentions();
+  autosize();
+  input.focus();
+  input.setSelectionRange(Math.max(0, at), Math.max(0, at));
+}
+
+function renderMentions() {
+  const box = $('mentions');
+  mentions = mentions.filter((t) => openTabs.some((o) => o.id === t.id) || !openTabs.length);
+  box.hidden = !mentions.length;
+  box.textContent = '';
+  mentions.forEach((t, i) => {
+    const c = el('div', 'mention', `<img alt="" /><span></span><button title="Remove">${icon('x')}</button>`);
+    c.querySelector('img').src = favicon(t);
+    c.querySelector('span').textContent = t.title || t.url || `Tab ${t.id}`;
+    c.title = `${i === 0 ? 'The AI works on this tab' : 'The AI is told about this tab'}\n${t.url || ''}`;
+    c.querySelector('button').addEventListener('click', () => {
+      mentions.splice(i, 1);
+      renderMentions();
+      input.focus();
+    });
+    box.appendChild(c);
+  });
+  $('tabChip').hidden = !!mentions.length;
+  updateSendState();
+}
+
+// The tab picker from the chip: same as typing "#".
+function pickTab() {
+  const at = input.selectionStart ?? input.value.length;
+  const before = input.value.slice(0, at);
+  const pad = before && !/\s$/.test(before) ? ' ' : '';
+  input.value = `${before}${pad}#${input.value.slice(at)}`;
+  input.focus();
+  input.setSelectionRange(at + pad.length + 1, at + pad.length + 1);
+  slashSel = 0;
+  refreshTabs().then(updateSlash);
+}
+
+async function refreshTabs() {
+  openTabs = await chrome.tabs.query({}).catch(() => openTabs);
+  if (mentions.length) {
+    mentions = mentions.map((t) => openTabs.find((o) => o.id === t.id) || t);
+    renderMentions();
+  }
+}
+
+// The tab the AI works on: the first #mention, else the active tab.
+async function targetTab() {
+  return mentions[0] || activeTab();
 }
 
 function fill(text) {
@@ -1192,8 +1334,10 @@ function fill(text) {
 
 async function runWorkflow(name) {
   if (busy) return toast('Still working. Press Esc to stop first.');
-  const tab = await activeTab();
+  const tab = await targetTab();
   port?.postMessage({ type: 'run_workflow', sid, name, tabId: tab?.id });
+  mentions = [];
+  renderMentions();
 }
 
 const skillPrompt = (name) => `Turn the task you did in this chat into a reusable skill named "${name}" so next time it can be done quickly, without exploring the page again. ` +
@@ -1225,8 +1369,10 @@ const bgCards = new Map(); // bg sid -> card
 
 function startBgTask(agent, text) {
   if (!agentChoices().some((a) => a.name === agent)) return toast(`No agent called @${agent}. Type @ to see them.`, 2500);
-  activeTab().then((tab) => port?.postMessage({ type: 'bg_task', sid, agent, text, tabId: tab?.id, kind: settings.agent, cwd: settings.cwd || '~', mode: settings.mode, model: currentModel(), ollamaUrl: settings.ollamaUrl }));
+  targetTab().then((tab) => port?.postMessage({ type: 'bg_task', sid, agent, text, tabId: tab?.id, kind: settings.agent, cwd: settings.cwd || '~', mode: settings.mode, model: currentModel(), ollamaUrl: settings.ollamaUrl }));
   fill('');
+  mentions = [];
+  renderMentions();
 }
 
 function renderBgTask(ev) {
@@ -1276,7 +1422,7 @@ function finishBgTask(ev) {
 function runSlash(i) {
   const c = slashItems[i];
   $('slash').hidden = true;
-  if (!c?.at) {
+  if (!c?.at && !c?.tab) {
     input.value = '';
     autosize();
   }
@@ -1648,6 +1794,7 @@ async function showTab() {
 }
 
 chrome.tabs.onActivated.addListener((i) => i.windowId === windowId && showTab());
+for (const ev of ['onCreated', 'onRemoved', 'onUpdated']) chrome.tabs[ev].addListener(() => refreshTabs());
 chrome.tabs.onUpdated.addListener((id, info, tab) => tab.windowId === windowId && tab.active && (info.title || info.favIconUrl || info.url) && showTab());
 
 // ---------- connection ----------
@@ -1744,14 +1891,17 @@ async function send(text) {
     return runWorkflow(m[1]);
   }
   if (!text) text = 'What do you see in this image?';
-  const tab = await activeTab();
+  const tab = await targetTab();
+  const tabIds = mentions.map((t) => t.id);
   const images = attachments.map(({ mediaType, data }) => ({ mediaType, data }));
   const thumbs = attachments.map((a) => a.thumb);
   if (images.length && settings.agent === 'terminal') toast('Images are not sent to a terminal AI');
-  port?.postMessage({ type: 'send', sid, kind: settings.agent, text, tabId: tab?.id, cwd: settings.cwd || '~', mode: settings.mode, model: currentModel(), ollamaUrl: settings.ollamaUrl, images, thumbs });
+  port?.postMessage({ type: 'send', sid, kind: settings.agent, text, tabId: tab?.id, tabIds, cwd: settings.cwd || '~', mode: settings.mode, model: currentModel(), ollamaUrl: settings.ollamaUrl, images, thumbs });
   input.value = '';
   attachments = [];
+  mentions = [];
   renderAttachments();
+  renderMentions();
   autosize();
   closeMenus();
 }
@@ -1810,8 +1960,9 @@ function updateSendState() {
   const has = !!(input.value.trim() || attachments.length);
   sendBtn.disabled = !busy && !has;
   sendBtn.classList.toggle('queue', busy && has);
-  sendBtn.title = busy ? (has ? 'Send when this finishes (Enter)' : 'Stop (Esc)') : 'Send (Enter)';
-  if (!voice) input.placeholder = busy ? 'Add a follow-up… it’s sent when this finishes' : PLACEHOLDER;
+  const midTurn = settings.agent === 'claude';
+  sendBtn.title = busy ? (has ? (midTurn ? 'Send now: Claude reads it at its next step (Enter)' : 'Send when this finishes (Enter)') : 'Stop (Esc)') : 'Send (Enter)';
+  if (!voice) input.placeholder = busy ? (midTurn ? 'Add to what Claude is doing… it reads this at its next step' : 'Add a follow-up… it’s sent when this finishes') : PLACEHOLDER;
   showGhost();
 }
 
@@ -1924,6 +2075,10 @@ async function init() {
       send(input.value);
     } else if (e.key === 'Tab' && !e.shiftKey && !input.value && takeSuggestion()) {
       e.preventDefault();
+    } else if (e.key === 'Backspace' && mentions.length && input.selectionStart === 0 && input.selectionEnd === 0) {
+      e.preventDefault();
+      mentions.pop();
+      renderMentions();
     }
   });
   input.addEventListener('paste', (e) => {
@@ -1940,6 +2095,7 @@ async function init() {
   });
   $('shotBtn').addEventListener('click', attachScreenshot);
   $('micBtn').addEventListener('click', toggleVoice);
+  $('tabChip').addEventListener('click', pickTab);
   $('micBtn').hidden = !Recognition;
 
   // drag & drop
@@ -1989,6 +2145,7 @@ async function init() {
 
   renderAgentUI();
   await showTab();
+  await refreshTabs();
   renderEmpty();
   autosize();
   connect();

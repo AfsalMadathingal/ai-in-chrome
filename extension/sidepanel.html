@@ -35,9 +35,10 @@
     <div id="slash" class="menu slash" role="listbox" hidden></div>
     <div id="queue" class="queue" hidden></div>
     <div id="composer" class="composer">
+      <div id="mentions" class="mentions" hidden></div>
       <div id="attachments" class="attachments" hidden></div>
       <div id="ghost" class="ghost" hidden><span class="gt"></span><kbd>Tab</kbd></div>
-      <textarea id="input" rows="1" placeholder="Ask anything about this tab…  ( / commands · @ agents)"></textarea>
+      <textarea id="input" rows="1" placeholder="Ask anything about this tab…  ( / commands · @ agents · # tabs)"></textarea>
       <div class="toolbar">
         <button id="attachBtn" class="tb" title="Attach image" aria-label="Attach image">
           <svg viewBox="0 0 24 24"><path d="m21.4 11.1-9.2 9.2a6 6 0 0 1-8.5-8.5l9.2-9.2a4 4 0 0 1 5.7 5.7l-9.2 9.2a2 2 0 0 1-2.8-2.8l8.5-8.5"/></svg>
@@ -48,7 +49,7 @@
         <button id="micBtn" class="tb mic" title="Speak your message" aria-label="Voice input">
           <svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
         </button>
-        <div id="tabChip" class="tabchip" title="The tab the AI works on"><img id="tabIcon" alt="" /><span id="tabTitle">No tab</span></div>
+        <button id="tabChip" class="tabchip" title="The tab the AI works on. Click to pick another (or type #)"><img id="tabIcon" alt="" /><span id="tabTitle">No tab</span></button>
         <span class="spacer"></span>
         <div class="picker up">
           <button id="modeBtn" class="pill small" aria-haspopup="menu" title="Permission mode">
@@ -91,7 +92,7 @@
           <button data-v="ask">Ask before acting</button>
           <button data-v="auto">Act without asking</button>
         </div>
-        <p class="hint">"Act without asking" covers browser actions and web search. Shell commands and file changes still ask.</p>
+        <p class="hint">"Act without asking" covers browser actions, web search and file edits. Shell commands still ask.</p>
       </section>
       <section>
         <h3>Run</h3>

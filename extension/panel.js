@@ -154,6 +154,7 @@ chrome.runtime.onConnect.addListener((port) => {
         await deleteChat(msg.sid);
         port.postMessage({ type: 'chats', chats: await listChats() });
       } else if (msg.type === 'approve') approvals.get(msg.id)?.resolve(msg.decision);
+      else if (msg.type === 'answer') approvals.get(msg.id)?.resolve(msg.answers ? { answers: msg.answers } : 'skip');
       else if (msg.type === 'set_mode') setMode(msg.mode);
       else if (msg.type === 'save_workflow') port.postMessage({ type: 'workflow_saved', ...(await saveWorkflow(msg)) });
       else if (msg.type === 'run_workflow') await runWorkflow(msg);
@@ -212,6 +213,14 @@ async function pageGlance(tabId) {
   ].filter(Boolean).join('\n') };
 }
 
+// Tabs the user picked with #: the first is the current tab; the AI reaches the others by tabId.
+async function tabLines(tabId, tabIds) {
+  if (!tabIds.length) return tabLine(tabId);
+  const lines = await Promise.all(tabIds.map(tabLine));
+  const note = tabIds.length > 1 ? `\nThe user is talking about these ${tabIds.length} tabs. The first is the current tab; pass tabId to work on the others.` : '';
+  return `${lines.join('\n')}${note}`;
+}
+
 // ---------- follow-ups typed while the AI works: queued, then sent together when it finishes ----------
 
 const queueMsg = (sid, c) => ({ type: 'queue', sid, items: (c.queue || []).map(({ id, text, thumbs }) => ({ id, text, images: thumbs?.length || 0 })) });
@@ -235,8 +244,10 @@ async function flushQueue(sid) {
 }
 
 async function send(msg) {
-  const { sid, kind, text, tabId, cwd, mode, model, ollamaUrl, images = [], thumbs = [] } = msg;
+  const { sid, kind, text, tabId, tabIds = [], cwd, mode, model, ollamaUrl, images = [], thumbs = [] } = msg;
   const c = await chat(sid);
+  // Claude Code reads a message mid-task (at its next step); other AIs get it when they finish.
+  if (c.busy && kind === 'claude' && c.kind === 'claude') return steer(msg, c);
   if (c.busy) {
     (c.queue ||= []).push({ ...msg, id: `q${++seq}` });
     broadcast(sid, queueMsg(sid, c));
@@ -244,7 +255,7 @@ async function send(msg) {
   }
   c.kind = kind;
   if (tabId != null && !c.parent) deps.setCurrentTab(tabId); // a background task works in its own tab
-  const line = c.parent ? `[Tab: your own background tab, opened at ${c.url || 'about:blank'}]` : await tabLine(tabId);
+  const line = c.parent ? `[Tab: your own background tab, opened at ${c.url || 'about:blank'}]` : await tabLines(tabId, tabIds);
   await emit(sid, { t: 'user', text, tab: line, thumbs: thumbs.length ? thumbs : undefined });
   const index = await chatIndex();
   await touchChat(sid, { title: index[sid]?.title || text.replace(/\s+/g, ' ').slice(0, 80) || 'Image', kind });
@@ -272,6 +283,15 @@ async function send(msg) {
     return;
   }
   if (!deps.hostSend({ type: 'agent_send', sid, kind, text: full, cwd, mode, model, ollamaUrl, images, sessionId: c.sessionId })) {
+    throw new Error('Native host not connected. Run `aichrome install`, then click the extension icon.');
+  }
+}
+
+async function steer({ sid, text, tabId, tabIds = [], images = [], thumbs = [] }, c) {
+  const line = c.parent ? '' : await tabLines(tabId, tabIds);
+  await emit(sid, { t: 'user', text, tab: line || undefined, thumbs: thumbs.length ? thumbs : undefined, steer: true });
+  const full = `${line ? `${line}\n` : ''}<the user sent this while you were working; take it into account>\n${text}`;
+  if (!deps.hostSend({ type: 'agent_send', sid, kind: 'claude', text: full, images })) {
     throw new Error('Native host not connected. Run `aichrome install`, then click the extension icon.');
   }
 }
@@ -306,6 +326,8 @@ const READ_ONLY = new Set(['tabs_context', 'read_page', 'find', 'get_page_text',
 const READ_ONLY_COMPUTER = new Set(['screenshot', 'zoom', 'wait', 'scroll', 'scroll_to', 'hover', 'mouse_move']);
 // Read-only web tools that touch neither the browser nor the computer: "Act without asking" covers them too.
 const WEB_READ = new Set(['WebSearch', 'WebFetch', 'web_search']);
+// File edits: "Act without asking" covers them as well. Shell commands still ask.
+const FILE_EDIT = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
 function permissionKey(tool, input) {
   const short = tool.replace(/^mcp__ai-in-chrome__/, '');
@@ -330,7 +352,29 @@ async function currentMode(fallback) {
 // Switching to "Act without asking" also answers the browser permission cards already waiting.
 function setMode(mode) {
   if (mode !== 'auto') return;
-  for (const a of approvals.values()) if (a.browser) a.resolve('allow');
+  for (const a of approvals.values()) if (a.browser || FILE_EDIT.has(a.key)) a.resolve('allow');
+}
+
+// Claude's AskUserQuestion: show the questions as a card in the panel, and hand the picked answers back to Claude.
+async function askUser({ sid, input, allow, deny }) {
+  const where = ports.get(sid)?.size ? sid : chats.get(sid)?.parent;
+  if (!sid || !where || !ports.get(where)?.size) return deny('The AI in Chrome side panel is closed, so the user could not answer. Ask in plain text instead.');
+  const id = `${sid}:${++seq}`;
+  const agent = where !== sid ? chats.get(sid)?.agent : undefined;
+  const questions = (input.questions || []).map((q) => ({
+    question: String(q.question || ''), header: String(q.header || ''), multiSelect: !!q.multiSelect,
+    options: (q.options || []).map((o) => ({ label: String(o.label || ''), description: String(o.description || '') })),
+  }));
+  await emit(where, { t: 'question', id, agent, questions });
+  const reply = await new Promise((resolve) => {
+    approvals.set(id, { resolve, sid, key: 'AskUserQuestion' });
+    setTimeout(() => resolve('timeout'), 30 * 60 * 1000);
+  });
+  approvals.delete(id);
+  const answers = reply?.answers;
+  await emit(where, { t: 'question_done', id, answers: answers || null, reason: answers ? undefined : reply });
+  if (answers) return allow(answers);
+  return deny(reply === 'timeout' ? 'The user did not answer within 30 minutes.' : 'The user skipped these questions. Use your best judgment, or ask in plain text.');
 }
 
 export async function approve_action({ sid, mode, tool_name: tool = '', input = {} }) {
@@ -339,7 +383,8 @@ export async function approve_action({ sid, mode, tool_name: tool = '', input = 
   const browser = tool.startsWith('mcp__ai-in-chrome__');
   const short = tool.replace(/^mcp__ai-in-chrome__/, '');
   if (short === 'approve_action') return deny('Not allowed.');
-  if ((browser || WEB_READ.has(tool)) && (await currentMode(mode)) === 'auto') return allow;
+  if (tool === 'AskUserQuestion') return askUser({ sid, input, allow: (answers) => JSON.stringify({ behavior: 'allow', updatedInput: { ...input, answers } }), deny });
+  if ((browser || WEB_READ.has(tool) || FILE_EDIT.has(tool)) && (await currentMode(mode)) === 'auto') return allow;
   if (browser && (READ_ONLY.has(short) || (short === 'computer' && READ_ONLY_COMPUTER.has(input.action)))) return allow;
   const key = browser ? permissionKey(tool, input) : tool;
   if (allowed.get(sid)?.has(key)) return allow;
