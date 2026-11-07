@@ -561,7 +561,7 @@ async function runWorkflow({ sid, name, tabId }) {
 
 // ---------- @agent: a task run in its own background chat and tab, summarized in the chat that started it ----------
 
-const AI_KINDS = new Set(['claude', 'codex', 'ollama']);
+const AI_KINDS = new Set(['claude', 'codex', 'ollama', 'fm']);
 
 export function bgInfo(sid) {
   const c = chats.get(sid);

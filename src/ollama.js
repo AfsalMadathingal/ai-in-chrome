@@ -105,7 +105,7 @@ function ollamaError(status, text, model) {
 }
 
 // Ask the side panel (same rules as Claude Code: read-only tools pass, others may prompt the user).
-async function approved(s, name, args) {
+export async function approved(s, name, args) {
   const res = await callTool('approve_action', { sid: s.sid, mode: s.mode, tool_name: `mcp__ai-in-chrome__${name}`, input: args }, { timeoutMs: 330000 });
   const verdict = JSON.parse(res.text || '{}');
   return verdict.behavior === 'allow' ? { ok: true } : { ok: false, message: verdict.message || 'Denied.' };
