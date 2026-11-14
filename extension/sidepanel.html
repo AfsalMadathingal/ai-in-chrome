@@ -17,6 +17,13 @@
       <div id="agentMenu" class="menu" role="menu" hidden></div>
     </div>
     <span class="spacer"></span>
+    <div class="picker">
+      <button id="usageBtn" class="usage" title="Claude usage" aria-haspopup="dialog">
+        <svg viewBox="0 0 36 36"><circle class="track" cx="18" cy="18" r="15"/><circle class="fill" cx="18" cy="18" r="15" pathLength="100" stroke-dasharray="0 100"/></svg>
+        <span id="usagePct"></span>
+      </button>
+      <div id="usageMenu" class="menu right usage-menu" hidden></div>
+    </div>
     <button id="historyBtn" class="icon" title="Chat history" aria-label="Chat history">
       <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
     </button>
@@ -49,6 +56,8 @@
         <button id="micBtn" class="tb mic" title="Speak your message" aria-label="Voice input">
           <svg viewBox="0 0 24 24"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10a7 7 0 0 0 14 0M12 17v5M8 22h8"/></svg>
         </button>
+        <div class="picker up dirpick"><button id="dirChip" class="tabchip dirchip" title="Working folder"><svg viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z"/></svg><span id="dirName">~</span></button>
+          <div id="dirMenu" class="menu" role="menu" hidden></div></div>
         <button id="tabChip" class="tabchip" title="The tab the AI works on. Click to pick another (or type #)"><img id="tabIcon" alt="" /><span id="tabTitle">No tab</span></button>
         <span class="spacer"></span>
         <div class="picker up">
@@ -92,14 +101,18 @@
           <button data-v="ask">Ask before acting</button>
           <button data-v="auto">Act without asking</button>
         </div>
-        <p class="hint">"Act without asking" covers browser actions, web search and file edits. Shell commands still ask.</p>
+        <p class="hint">"Act without asking" covers browser actions, web search, reading and editing files, and shell commands that only read (like <code>ls</code> or <code>cat</code>). Other shell commands still ask.</p>
       </section>
       <section>
         <h3>Run</h3>
         <label class="field">Model <select id="modelSelect"></select></label>
         <label class="field" id="modelCustomField" hidden>Custom model name <input id="model" placeholder="model name" spellcheck="false" /></label>
         <label class="field" id="ollamaUrlField" hidden>Ollama address <input id="ollamaUrl" placeholder="http://127.0.0.1:11434" spellcheck="false" /></label>
-        <label class="field" id="cwdField">Working folder <input id="cwd" placeholder="~" spellcheck="false" /></label>
+        <div class="field" id="cwdField"><label for="cwd">Working folder</label>
+          <div class="cwdrow"><input id="cwd" list="recentDirs" placeholder="~" spellcheck="false" /><button type="button" id="cwdPick" class="btn">Choose…</button></div>
+          <datalist id="recentDirs"></datalist>
+          <span class="hint">Where the AI reads and edits files. Pick your project folder.</span>
+        </div>
       </section>
       <section>
         <h3>Tabs</h3>
@@ -139,6 +152,7 @@
       <section>
         <h3>Connection</h3>
         <p class="hint" id="hostStatus"></p>
+        <p class="hint" id="appVersion"></p>
         <div class="keys">
           <span><kbd>⌘</kbd><kbd>⇧</kbd><kbd>E</kbd> open panel</span>
           <span><kbd>Enter</kbd> send · <kbd>⇧</kbd><kbd>Enter</kbd> new line</span>

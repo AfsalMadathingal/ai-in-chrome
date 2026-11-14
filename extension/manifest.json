@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AI in Chrome",
-  "version": "0.3.0",
+  "version": "0.4.1",
   "description": "Control Chrome from your terminal or any AI through a local native-messaging bridge. No login.",
   "icons": {
     "16": "icons/icon-16.png",

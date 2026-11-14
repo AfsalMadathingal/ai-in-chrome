@@ -10,7 +10,9 @@ import { initPanel, onAgentEvent, onToolCall, approve_action, sidepanel_wait, si
 
 const HOST_NAME = 'com.ai_in_chrome.bridge';
 const GROUP_TITLE = 'AI';
-const MAX_SHOT_PX = 1568;
+const MAX_SHOT_PX = 1568; // full: true
+const SHOT_PX = 1280; // default: plenty to read a page, ~35% fewer image tokens
+const SHOT_QUALITY = 70;
 const NAV_TIMEOUT_MS = 30000;
 const LOG_LIMIT = 500;
 
@@ -104,7 +106,7 @@ connect();
 const TOOLS = {
   tabs_context, tabs_create, tabs_close, tabs_select, navigate, computer, read_page, find,
   form_input, get_page_text, javascript_tool, read_console_messages, read_network_requests, resize_window, cdp_command, extension_reload,
-  gif_creator, file_upload, upload_image,
+  gif_creator, file_upload, upload_image, save_image,
   network_request, network_intercept, network_export, cookies, __http, __tab_url,
   approve_action, sidepanel_wait, sidepanel_reply,
 };
@@ -226,7 +228,7 @@ async function tabs_context() {
   return `Tabs (tabId, title, url). Commands without tabId use the current tab, else the active tab. ${how}\n${lines.join('\n')}`;
 }
 
-async function tabs_create({ url }) {
+async function tabs_create({ url, snapshot: snap = true }) {
   const win = await chrome.windows.getLastFocused().catch(() => null);
   const tab = await chrome.tabs.create({ url: 'about:blank', active: !ownTabs(), ...(win && { windowId: win.id }) });
   await addToGroup(tab.id);
@@ -234,7 +236,27 @@ async function tabs_create({ url }) {
   ensureAttached(tab.id).catch(() => {});
   if (url) await waitForLoad(tab.id, () => chrome.tabs.update(tab.id, { url: normalizeUrl(url) }));
   const t = await chrome.tabs.get(tab.id);
-  return `Created tab ${t.id}: ${t.title || ''} ${t.url || t.pendingUrl || ''}`;
+  const extra = url && snap ? await snapshot(t.id).catch((e) => `(snapshot failed: ${e.message})`) : '';
+  return `Created tab ${t.id}: ${t.title || ''} ${t.url || t.pendingUrl || ''}${extra ? '\n' + extra : ''}`;
+}
+
+const originOf = (u) => { try { return new URL(u).origin; } catch { return null; } };
+
+// A same-site page opened from the user's tab: duplicate that tab so sessionStorage logins (common in admin apps)
+// come along, then navigate the copy. A plain new tab would land on a login screen.
+async function duplicateForAI(userTabId, url) {
+  const user = await chrome.tabs.get(userTabId);
+  const dest = normalizeUrl(url);
+  const origin = originOf(user.url);
+  if (!origin || origin === 'null' || originOf(dest) !== origin) return null;
+  const copy = await chrome.tabs.duplicate(userTabId).catch(() => null);
+  if (!copy) return null;
+  if (user.active) await chrome.tabs.update(userTabId, { active: true }).catch(() => {});
+  await addToGroup(copy.id);
+  setCurrentTab(copy.id);
+  ensureAttached(copy.id).catch(() => {});
+  await waitForLoad(copy.id, () => chrome.tabs.update(copy.id, { url: dest }));
+  return chrome.tabs.get(copy.id);
 }
 
 async function tabs_close({ tabId }) {
@@ -258,12 +280,17 @@ async function tabs_select({ tabId }) {
   return `Selected tab ${tab.id}: ${tab.title}`;
 }
 
-async function navigate({ tabId, url }) {
+async function navigate({ tabId, url, snapshot: snap = true }) {
   if (!url) throw new Error('url is required');
   const id = await resolveTab(tabId);
   if (ownTabs() && !['back', 'forward', 'reload'].includes(url) && !(await inGroup(id))) {
     // Leave the user's tab where it is: go there in a new AI tab instead.
-    const made = await tabs_create({ url });
+    const dup = await duplicateForAI(id, url).catch(() => null);
+    if (dup) {
+      const extra = snap ? await snapshot(dup.id).catch((e) => `(snapshot failed: ${e.message})`) : '';
+      return `Opened ${dup.url} in tab ${dup.id} (a background copy of the user's tab ${id}, so its login/session carries over). Use this tab from now on.\nTitle: ${dup.title}${extra ? '\n' + extra : ''}`;
+    }
+    const made = await tabs_create({ url, snapshot: snap });
     return `${made}\nOpened in a new background tab in the AI group, so the user's tab ${id} stays as it was. Use this tab from now on.`;
   }
   ensureAttached(id).catch(() => {});
@@ -275,7 +302,8 @@ async function navigate({ tabId, url }) {
     return chrome.tabs.update(id, { url: normalizeUrl(url) });
   });
   const t = await chrome.tabs.get(id);
-  return `Navigated tab ${id} to ${t.url}\nTitle: ${t.title}`;
+  const extra = snap ? await snapshot(id).catch((e) => `(snapshot failed: ${e.message})`) : '';
+  return `Navigated tab ${id} to ${t.url}\nTitle: ${t.title}${extra ? '\n' + extra : ''}`;
 }
 
 async function computer(args) {
@@ -283,9 +311,11 @@ async function computer(args) {
   const action = args.action;
   switch (action) {
     case 'screenshot':
-      return screenshot(id);
+      return screenshot(id, args);
     case 'zoom':
       return zoom(id, args.region);
+    case 'wait_for':
+      return waitFor(id, args);
     case 'left_click':
     case 'right_click':
     case 'double_click':
@@ -293,8 +323,10 @@ async function computer(args) {
       const [x, y] = await target(id, args);
       const button = action === 'right_click' ? 'right' : 'left';
       const count = action === 'double_click' ? 2 : action === 'triple_click' ? 3 : 1;
+      const before = await pageState(id, x, y);
       await click(id, x, y, button, count, modifierMask(args.modifiers || args.text));
-      return `${action} at (${Math.round(x)}, ${Math.round(y)})`;
+      const on = before?.target ? ` on ${before.target}` : '';
+      return `${action} at (${Math.round(x)}, ${Math.round(y)})${on}${await reactionReport(id, before)}`;
     }
     case 'hover':
     case 'mouse_move': {
@@ -312,17 +344,23 @@ async function computer(args) {
     }
     case 'type': {
       if (args.text == null) throw new Error('text is required');
-      if (args.ref) await click(id, ...(await target(id, args)));
+      if (args.ref || args.selector || args.label) await click(id, ...(await target(id, args)));
       await indicate(id, 'show');
       await cdp(id, 'Input.insertText', { text: String(args.text) });
-      return `Typed ${String(args.text).length} characters`;
+      if (!args.submit) return `Typed ${String(args.text).length} characters`;
+      // submit: press Enter too, and report what happened (one call instead of type + key + screenshot).
+      const before = await pageState(id);
+      await pressKey(id, 'Enter');
+      return `Typed ${String(args.text).length} characters and pressed Enter${await reactionReport(id, before)}`;
     }
     case 'key': {
       if (!args.text) throw new Error('text is required (e.g. "Enter", "ctrl+a", "Tab Tab Enter")');
       await indicate(id, 'show');
       const repeat = Math.max(1, Math.min(100, Number(args.repeat) || 1));
+      const report = /(^|\s)(Enter|Return|Escape|Esc)$/i.test(String(args.text).trim());
+      const before = report ? await pageState(id) : null;
       for (let i = 0; i < repeat; i++) for (const combo of String(args.text).trim().split(/\s+/)) await pressKey(id, combo);
-      return `Pressed ${args.text}${repeat > 1 ? ` x${repeat}` : ''}`;
+      return `Pressed ${args.text}${repeat > 1 ? ` x${repeat}` : ''}${report ? await reactionReport(id, before) : ''}`;
     }
     case 'scroll': {
       const [x, y] = args.coordinate || args.ref ? await target(id, args) : await viewportCenter(id);
@@ -336,7 +374,8 @@ async function computer(args) {
       return `Scrolled ${dir} by ${amount}px at (${Math.round(x)}, ${Math.round(y)})`;
     }
     case 'scroll_to': {
-      if (!args.ref) throw new Error('ref is required');
+      args = await resolveRef(id, args);
+      if (!args.ref) throw new Error('ref, selector or label is required');
       await inPage(id, (ref) => {
         const el = window.__aichromeRef(ref);
         if (!el) throw new Error(`ref ${ref} not found; call read_page again`);
@@ -350,13 +389,13 @@ async function computer(args) {
       return `Waited ${secs}s`;
     }
     default:
-      throw new Error(`Unknown computer action "${action}". Use: screenshot, left_click, right_click, double_click, triple_click, type, key, scroll, scroll_to, hover, left_click_drag, wait, zoom`);
+      throw new Error(`Unknown computer action "${action}". Use: screenshot, left_click, right_click, double_click, triple_click, type, key, scroll, scroll_to, hover, left_click_drag, wait, wait_for, zoom`);
   }
 }
 
-async function read_page({ tabId, filter = 'all', depth = 15, ref_id }) {
+async function read_page({ tabId, filter = 'all', depth = 15, ref_id, scope = 'all' }) {
   const id = await resolveTab(tabId);
-  const res = await inPage(id, (f, d, r) => window.__aichromeTree(f, d, r), [filter, Number(depth) || 15, ref_id || null]);
+  const res = await inPage(id, (f, d, r, s) => window.__aichromeTree(f, d, r, s), [filter, Number(depth) || 15, ref_id || null, scope]);
   if (res.error && !res.pageContent) throw new Error(res.error);
   const t = await chrome.tabs.get(id);
   const vp = res.viewport;
@@ -367,23 +406,68 @@ async function find({ tabId, query }) {
   if (!query) throw new Error('query is required');
   const id = await resolveTab(tabId);
   const res = await inPage(id, () => window.__aichromeTree('all', 40, null), []);
-  const words = String(query).toLowerCase().split(/\s+/).filter(Boolean);
-  const scored = res.pageContent.split('\n')
-    .map((line) => ({ line: line.trim(), score: words.filter((w) => line.toLowerCase().includes(w)).length }))
-    .filter((m) => m.score > 0 && /\[ref_\d+\]/.test(m.line))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 20);
-  if (!scored.length) return `No elements matching "${query}"`;
-  return `Elements matching "${query}":\n${scored.map((m) => m.line).join('\n')}`;
+  const lines = res.pageContent.split('\n').map((l) => l.trim()).filter((l) => /\[ref_\d+\]/.test(l));
+  // Several lookups in one call: "Save button | cover image | Draft".
+  const queries = String(query).split(/\s*[|;]\s*/).filter(Boolean);
+  const blocks = queries.map((q) => {
+    const words = q.toLowerCase().split(/\s+/).filter((w) => w && !STOP_WORDS.has(w));
+    if (!words.length) return `"${q}": (no search words)`;
+    const scored = lines.map((line) => {
+      const lower = line.toLowerCase();
+      const name = (/"([^"]*)"/.exec(lower) || [])[1] || '';
+      const role = lower.split(/[\s"]/)[0];
+      let score = 0;
+      for (const w of words) {
+        if (name.includes(w)) score += 3; // the element's own name counts most
+        else if (role === w || (ROLE_WORDS[w] || []).includes(role)) score += 1.5;
+        else if (lower.includes(w)) score += 1; // href, placeholder, row text…
+      }
+      if (name && name === q.toLowerCase()) score += 3;
+      if (lower.includes('(offscreen)')) score -= 0.25;
+      return { line, score };
+    }).filter((m) => m.score >= 1.5);
+    if (!scored.length) return `"${q}": no matches`;
+    const top = Math.max(...scored.map((m) => m.score));
+    // Drop weak matches when there are strong ones.
+    const keep = scored.filter((m) => m.score >= top * 0.6).sort((a, b) => b.score - a.score);
+    const shown = keep.slice(0, 10);
+    const more = keep.length > shown.length ? `\n  …${keep.length - shown.length} more` : '';
+    return `"${q}":\n${shown.map((m) => '  ' + m.line).join('\n')}${more}`;
+  });
+  return blocks.join('\n');
 }
 
-async function form_input({ tabId, ref, value }) {
-  if (!ref) throw new Error('ref is required');
+const STOP_WORDS = new Set(['the', 'a', 'an', 'for', 'of', 'to', 'in', 'on', 'and', 'or', 'with', 'this', 'that', 'first', 'element']);
+// Words agents use for roles that the tree names differently.
+const ROLE_WORDS = {
+  input: ['textbox', 'searchbox', 'combobox', 'spinbutton', 'checkbox', 'radio', 'button'],
+  field: ['textbox', 'searchbox', 'combobox', 'spinbutton'],
+  toggle: ['checkbox', 'switch'],
+  dropdown: ['combobox', 'listbox'],
+  select: ['combobox', 'listbox'],
+  menu: ['menu', 'menuitem', 'combobox'],
+  box: ['textbox', 'searchbox', 'checkbox'],
+  textarea: ['textbox'],
+  search: ['searchbox', 'textbox'],
+  tab: ['tab'],
+  file: ['button'],
+};
+
+async function form_input(args) {
+  const { tabId, value } = args;
   const id = await resolveTab(tabId);
+  const { ref } = await resolveRef(id, args);
+  if (!ref) throw new Error('ref, selector or label is required');
   await indicate(id, 'show');
   return inPage(id, (ref, value) => {
-    const el = window.__aichromeRef(ref);
+    let el = window.__aichromeRef(ref);
     if (!el) throw new Error(`ref ${ref} not found; call read_page again`);
+    // A <label> (or a styled switch wrapping a hidden checkbox) stands for its control.
+    if (el.tagName === 'LABEL' && el.control) el = el.control;
+    else if (!['INPUT', 'SELECT', 'TEXTAREA'].includes(el.tagName) && !el.isContentEditable) {
+      const inner = el.querySelector('input, select, textarea') || el.closest('label')?.control;
+      if (inner) el = inner;
+    }
     el.scrollIntoView({ block: 'center', behavior: 'instant' });
     const fire = () => {
       el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -425,7 +509,7 @@ async function get_page_text({ tabId, max_chars = 50000 }) {
   return `Title: ${res.title}\nURL: ${res.url}\n\n${text}`;
 }
 
-async function javascript_tool({ tabId, text, code }) {
+async function javascript_tool({ tabId, text, code, save_path, max_chars = 20000 }) {
   const expression = text ?? code;
   if (!expression) throw new Error('text (JavaScript code) is required');
   const id = await resolveTab(tabId);
@@ -436,7 +520,93 @@ async function javascript_tool({ tabId, text, code }) {
   }
   const v = res.result;
   if (v.type === 'undefined') return 'undefined';
-  return typeof v.value === 'string' ? v.value : JSON.stringify(v.value ?? v.description, null, 2);
+  const out = typeof v.value === 'string' ? v.value : JSON.stringify(v.value ?? v.description, null, 2);
+  if (save_path) {
+    // A data: URL is saved as the binary file it encodes (e.g. a canvas image); anything else as text.
+    const m = /^data:([\w.+-]+\/[\w.+-]+)?(;base64)?,/.exec(out);
+    if (m) {
+      const mime = m[1] || 'application/octet-stream';
+      const body = out.slice(m[0].length);
+      const data = m[2] ? body : utf8ToBase64(decodeURIComponent(body));
+      return { text: `Saved ${mime} (${Math.round(base64Bytes(data) / 1024)} KB)`, file: { name: `result.${extFor(mime)}`, data } };
+    }
+    return { text: `Saved result (${out.length} chars)`, file: { name: typeof v.value === 'string' ? 'result.txt' : 'result.json', data: utf8ToBase64(out) } };
+  }
+  const max = Math.max(1000, Number(max_chars) || 20000);
+  if (out.length > max) return `${out.substring(0, max)}\n…[${out.length - max} more chars cut. Return less, or pass save_path to write the whole result to a file]`;
+  return out;
+}
+
+function utf8ToBase64(str) {
+  const bytes = new TextEncoder().encode(str);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+
+const extFor = (mime) => ({ 'image/jpeg': 'jpg', 'image/svg+xml': 'svg', 'text/plain': 'txt' }[mime] || mime.split('/')[1] || 'bin');
+
+// Save an image shown on the page (img, canvas, video frame, CSS background) as an image ID for upload_image in
+// any tab, and optionally to a file. Works for blob: URLs and generated images without passing base64 around.
+async function save_image(args) {
+  const id = await resolveTab(args.tabId);
+  let { ref } = await resolveRef(id, args.ref || args.selector || args.label ? args : { ...args, selector: 'img' });
+  if (!ref) throw new Error('ref, selector or label of the image is required');
+  const token = `p${Date.now()}${Math.random().toString(36).slice(2, 6)}`;
+  if (!(await inPage(id, (r, t) => window.__aichromeMark(r, t), [ref, token]))) throw new Error(`ref ${ref} not found; call read_page again`);
+  // Main world: blob: URLs and page canvases are reachable there exactly as the page sees them.
+  const expression = `(async () => {
+    const el = document.querySelector('[data-aichrome-pick="${token}"]');
+    el.removeAttribute('data-aichrome-pick');
+    const toB64 = (blob) => new Promise((ok, bad) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = bad; r.readAsDataURL(blob); });
+    const fromCanvas = (draw, w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; draw(c.getContext('2d')); return c.toDataURL('image/png'); };
+    let img = el.tagName === 'IMG' ? el : el.tagName === 'PICTURE' ? el.querySelector('img') : null;
+    if (!img && !['CANVAS', 'VIDEO'].includes(el.tagName)) img = el.querySelector('img, canvas, video') || null;
+    const node = img || el;
+    try {
+      if (node.tagName === 'CANVAS') return { url: node.toDataURL('image/png'), w: node.width, h: node.height };
+      if (node.tagName === 'VIDEO') return { url: fromCanvas((g) => g.drawImage(node, 0, 0), node.videoWidth, node.videoHeight), w: node.videoWidth, h: node.videoHeight };
+      let src = node.tagName === 'IMG' ? (node.currentSrc || node.src) : null;
+      if (!src) { const bg = getComputedStyle(node).backgroundImage.match(/url\(["']?(.*?)["']?\)/); src = bg && bg[1]; }
+      if (!src) return { error: 'No image found at that element' };
+      try {
+        const res = await fetch(src);
+        if (res.ok) { const blob = await res.blob(); if (blob.type.startsWith('image/')) return { url: await toB64(blob), w: node.naturalWidth || 0, h: node.naturalHeight || 0 }; }
+      } catch {}
+      if (node.tagName === 'IMG' && node.complete) return { url: fromCanvas((g) => g.drawImage(node, 0, 0), node.naturalWidth, node.naturalHeight), w: node.naturalWidth, h: node.naturalHeight };
+    } catch (e) {}
+    const r = node.getBoundingClientRect();
+    return { rect: { x: r.left + scrollX, y: r.top + scrollY, width: r.width, height: r.height } };
+  })()`;
+  const res = (await cdp(id, 'Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }))?.result?.value;
+  if (!res || res.error) throw new Error(res?.error || 'Could not read the image');
+  let data;
+  let mimeType;
+  let how = 'original file';
+  if (res.url) {
+    const m = /^data:([^;,]+)?;base64,/.exec(res.url);
+    mimeType = m?.[1] || 'image/png';
+    data = res.url.slice(res.url.indexOf(',') + 1);
+  } else {
+    // Cross-origin image without CORS: capture it from the screen instead.
+    const rect = await inPage(id, (r) => {
+      const el = window.__aichromeRef(r);
+      el.scrollIntoView({ block: 'center', behavior: 'instant' });
+      const b = el.getBoundingClientRect();
+      return { x: b.left, y: b.top, width: b.width, height: b.height };
+    }, [ref]);
+    const { cssVisualViewport: vv } = await cdp(id, 'Page.getLayoutMetrics');
+    data = await capture(id, { x: vv.pageX + rect.x, y: vv.pageY + rect.y, width: Math.max(1, rect.width), height: Math.max(1, rect.height) }, await devicePixelRatio(id));
+    mimeType = 'image/jpeg';
+    how = 'screen capture (the image is cross-origin)';
+  }
+  const imageId = `shot_${++shotSeq}`;
+  shots.set(imageId, { data, mimeType });
+  if (shots.size > SHOT_CACHE) shots.delete(shots.keys().next().value);
+  const text = `Saved image ${imageId} (${res.w && res.h ? `${res.w}x${res.h}, ` : ''}${mimeType}, ${Math.round(base64Bytes(data) / 1024)} KB, ${how}). ` +
+    'Pass it to upload_image with imageId (works in any tab).';
+  if (args.save_path) return { text, file: { name: `${args.filename || 'image'}.${extFor(mimeType)}`, data } };
+  return text;
 }
 
 async function read_console_messages({ tabId, pattern, limit = 100, onlyErrors = false, clear = false }) {
@@ -645,9 +815,18 @@ async function renderGif(frames, options) {
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 const base64Bytes = (b64) => Math.floor((b64.length * 3) / 4) - (b64.endsWith('==') ? 2 : b64.endsWith('=') ? 1 : 0);
 
-async function file_upload({ tabId, ref, files }) {
-  if (!ref) throw new Error('ref of the <input type="file"> is required (find it with read_page or find)');
+// A ref to an "Upload" button or label means its file input: use that instead of failing or opening a picker.
+async function fileInputRef(tabId, ref) {
+  return (await inPage(tabId, (r) => window.__aichromeFileInput(r), [ref]).catch(() => null)) || null;
+}
+
+async function file_upload(args) {
+  const { tabId, files } = args;
   if (!Array.isArray(files) || !files.length) throw new Error('files is required (aichrome fills it from `paths`)');
+  const tid = await resolveTab(tabId);
+  let { ref } = await resolveRef(tid, args.ref || args.selector || args.label ? args : { ...args, selector: 'input[type=file]' });
+  if (!ref) throw new Error('ref of the <input type="file"> is required (find it with read_page or find)');
+  ref = (await fileInputRef(tid, ref)) || ref;
   let total = 0;
   for (const f of files) {
     if (typeof f.data !== 'string' || !f.name) throw new Error('each file needs `data` (base64) and `name`');
@@ -690,6 +869,13 @@ async function upload_image({ tabId, imageId, data, mimeType, ref, coordinate, f
   const id = await resolveTab(tabId);
   const ext = image.mimeType === 'image/jpeg' ? 'jpg' : (image.mimeType.split('/')[1] || 'png');
   const name = filename || `image.${ext}`;
+  // An "Upload" button's ref means its file input; a drop zone keeps the drop.
+  if (ref) ref = (await inPage(id, (r) => {
+    const el = window.__aichromeRef(r);
+    if (!el) return null;
+    const pickerish = el.matches('button, label, a, [role="button"], input[type="file"]') || el.closest('button, label, [role="button"]');
+    return pickerish ? window.__aichromeFileInput(r) : null;
+  }, [ref]).catch(() => null)) || ref;
   const target = ref ? { ref } : (() => { const [x, y] = toCss(id, coordinate); return { x, y }; })();
   indicate(id, 'show');
   return dropFile(id, target, image.data, name, image.mimeType);
@@ -733,10 +919,17 @@ async function dropFile(tabId, target, base64, name, mimeType) {
       x = b.left + b.width / 2;
       y = b.top + b.height / 2;
     }
+    let accepted = false;
     for (const type of ['dragenter', 'dragover', 'drop']) {
-      el.dispatchEvent(new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt, clientX: x, clientY: y, screenX: x + window.screenX, screenY: y + window.screenY }));
+      const ev = new DragEvent(type, { bubbles: true, cancelable: true, dataTransfer: dt, clientX: x, clientY: y, screenX: x + window.screenX, screenY: y + window.screenY });
+      el.dispatchEvent(ev);
+      if (type === 'drop') accepted = ev.defaultPrevented;
     }
-    return { ok: `Dropped "${name}" (${Math.round(file.size / 1024)} KB) on <${el.tagName.toLowerCase()}> at (${Math.round(x)}, ${Math.round(y)}).` };
+    const where = `<${el.tagName.toLowerCase()}> at (${Math.round(x)}, ${Math.round(y)})`;
+    if (!accepted) {
+      return { ok: `Dropped "${name}" on ${where}, but no drop handler accepted it, so it probably did nothing. Use the page's <input type="file"> ref instead (read_page lists it, even when hidden).` };
+    }
+    return { ok: `Dropped "${name}" (${Math.round(file.size / 1024)} KB) on ${where}; the page accepted the drop.` };
   }, [target, base64, name, mimeType]);
   if (res.error) throw new Error(res.error);
   return res.ok;
@@ -745,12 +938,12 @@ async function dropFile(tabId, target, base64, name, mimeType) {
 // ---------- screenshots ----------
 
 // Capture the visible viewport, scaled to fit MAX_SHOT_PX.
-async function grabViewport(tabId) {
+async function grabViewport(tabId, { full = true } = {}) {
   const { cssVisualViewport: vv } = await cdp(tabId, 'Page.getLayoutMetrics');
   const w = vv.clientWidth;
   const h = vv.clientHeight;
-  const fit = Math.min(1, MAX_SHOT_PX / Math.max(w, h));
-  const data = await capture(tabId, { x: vv.pageX, y: vv.pageY, width: w, height: h }, fit);
+  const fit = Math.min(1, (full ? MAX_SHOT_PX : SHOT_PX) / Math.max(w, h));
+  const data = await capture(tabId, { x: vv.pageX, y: vv.pageY, width: w, height: h }, fit, full ? 80 : SHOT_QUALITY);
   const dims = jpegSize(data) || { width: Math.round(w * fit), height: Math.round(h * fit) };
   return { data, w, h, dims };
 }
@@ -760,15 +953,24 @@ const SHOT_CACHE = 20;
 const shots = new Map();
 let shotSeq = 0;
 
-async function screenshot(tabId) {
-  const { data, w, h, dims } = await grabViewport(tabId);
+async function screenshot(tabId, { full = false, annotate = false } = {}) {
+  let legend = [];
+  if (annotate) legend = (await inPage(tabId, () => window.__aichromeAnnotate(true), []).catch(() => [])) || [];
+  let grabbed;
+  try {
+    grabbed = await grabViewport(tabId, { full });
+  } finally {
+    if (annotate) await inPage(tabId, () => window.__aichromeAnnotate(false), []).catch(() => {});
+  }
+  const { data, w, h, dims } = grabbed;
   shotScale.set(tabId, { sx: w / dims.width, sy: h / dims.height });
   const imageId = `shot_${++shotSeq}`;
   shots.set(imageId, { data, mimeType: 'image/jpeg' });
   if (shots.size > SHOT_CACHE) shots.delete(shots.keys().next().value);
   await recordFrame(tabId, { data, w, h }, null);
   return {
-    text: `Screenshot of tab ${tabId} (image ID: ${imageId}): ${dims.width}x${dims.height}px (viewport ${Math.round(w)}x${Math.round(h)} CSS px). Use screenshot pixel coordinates for clicks.`,
+    text: `Screenshot of tab ${tabId} (image ID: ${imageId}): ${dims.width}x${dims.height}px (viewport ${Math.round(w)}x${Math.round(h)} CSS px). Use screenshot pixel coordinates for clicks.` +
+      (annotate ? `\nLabels are refs (12 = ref_12), usable as ref in computer/form_input:\n${legend.join('\n')}` : ''),
     image: { data, mimeType: 'image/jpeg' },
   };
 }
@@ -789,10 +991,10 @@ async function zoom(tabId, region) {
 // `scale` = desired output pixels per CSS pixel.
 // Like Claude in Chrome, verify the decoded image size instead of trusting devicePixelRatio
 // (it can be stale mid-navigation or across displays); on a mismatch, learn the real factor and recapture.
-async function capture(tabId, rect, scale) {
+async function capture(tabId, rect, scale, quality = 80) {
   const shoot = async (factor) => {
     const { data } = await cdp(tabId, 'Page.captureScreenshot', {
-      format: 'jpeg', quality: 80, captureBeyondViewport: false, fromSurface: true,
+      format: 'jpeg', quality, captureBeyondViewport: false, fromSurface: true,
       clip: { ...rect, scale: scale / factor },
     });
     if (!data) throw new Error('Failed to capture screenshot via CDP');
@@ -848,7 +1050,16 @@ function toCss(tabId, coord) {
   return [Number(coord[0]) * s.sx, Number(coord[1]) * s.sy];
 }
 
+// Turn `selector` / `label` (visible text) into a ref, so tools can act without a find/read_page call first.
+async function resolveRef(tabId, args) {
+  if (args.ref || (!args.selector && !args.label)) return args;
+  const res = await inPage(tabId, (q) => window.__aichromeQuery(q), [{ selector: args.selector, label: args.label }]);
+  if (!res?.ref) throw new Error(res?.error || 'Element not found');
+  return { ...args, ref: res.ref, _desc: res.desc };
+}
+
 async function target(tabId, args) {
+  args = await resolveRef(tabId, args);
   if (args.ref) {
     const r = await inPage(tabId, (ref) => {
       const el = window.__aichromeRef(ref);
@@ -861,7 +1072,100 @@ async function target(tabId, args) {
     return r;
   }
   if (args.coordinate) return toCss(tabId, args.coordinate);
-  throw new Error('coordinate [x, y] or ref is required');
+  throw new Error('coordinate [x, y], ref, selector or label is required');
+}
+
+const pageState = (tabId, x, y) => inPage(tabId, (x, y) => window.__aichromeState(x, y), [x ?? null, y ?? null]).catch(() => null);
+
+// After a click/key: wait for the page to settle, then say what changed, so no screenshot is needed to check.
+async function reactionReport(tabId, before) {
+  if (!before) return '';
+  await sleep(120);
+  // A navigation may have started: wait for it.
+  for (let i = 0; i < 60 && (await chrome.tabs.get(tabId).catch(() => null))?.status === 'loading'; i++) await sleep(250);
+  let after = await settle(tabId);
+  if (!after) return '\n→ Page is reloading or navigating.';
+  const out = [];
+  if (after.url !== before.url) {
+    after = (await settle(tabId, { needControls: true })) || after; // SPA routes render after the URL changes
+    out.push(`→ Navigated to ${after.url} (${after.title})`);
+    const snap = await snapshot(tabId).catch((e) => `(snapshot failed: ${e.message})`);
+    if (snap) out.push(snap);
+    return '\n' + out.join('\n');
+  }
+  if (after.title !== before.title) out.push(`→ Title is now "${after.title}"`);
+  const oldDialogs = new Set(before.dialogs.map((d) => d.ref));
+  for (const d of after.dialogs.filter((d) => !oldDialogs.has(d.ref))) {
+    out.push(`→ Dialog opened: "${d.name}" [${d.ref}]`);
+    const tree = await inPage(tabId, (r) => window.__aichromeTree('interactive', 20, r), [d.ref]).catch(() => null);
+    if (tree?.pageContent) out.push(clip(tree.pageContent, 2000));
+  }
+  const newDialogs = new Set(after.dialogs.map((d) => d.ref));
+  if (before.dialogs.some((d) => !newDialogs.has(d.ref))) out.push('→ A dialog closed');
+  const oldToasts = new Set(before.toasts);
+  for (const t of after.toasts.filter((t) => !oldToasts.has(t))) out.push(`→ Message: "${t}"`);
+  if (before.control && after.targetRef === before.targetRef) {
+    const now = await inPage(tabId, (r) => window.__aichromeControlState(r), [before.targetRef]).catch(() => null);
+    const changed = Object.keys({ ...before.control, ...(now || {}) }).filter((k) => String(before.control[k]) !== String(now?.[k]));
+    if (changed.length) out.push(`→ ${changed.map((k) => `${k}: ${before.control[k]} → ${now?.[k]}`).join(', ')}`);
+    else if ('checked' in before.control) out.push(`→ Still ${before.control.checked ? 'checked' : 'unchecked'}: the click did not toggle it (try form_input with its checkbox ref)`);
+  }
+  if (after.focus && after.focus !== before.focus) out.push(`→ Focus: ${after.focus}`);
+  const delta = after.mutations - before.mutations;
+  if (!out.length) out.push(delta > 0 ? `→ Page updated (${delta} DOM changes)` : '→ No visible change');
+  return '\n' + out.join('\n');
+}
+
+// Wait until the DOM stops changing (~250ms quiet, max ~2.5s). needControls: also wait (up to ~4s) for the main
+// content to have controls, since SPAs show a spinner first and fill the page from an API call.
+async function settle(tabId, { needControls = false } = {}) {
+  let state = await pageState(tabId);
+  const start = Date.now();
+  for (let quiet = 0; state && quiet < 2 && Date.now() - start < 2500;) {
+    await sleep(125);
+    const next = await pageState(tabId);
+    quiet = next && next.mutations === state.mutations && next.url === state.url ? quiet + 1 : 0;
+    state = next || state;
+  }
+  while (needControls && Date.now() - start < 4000) {
+    const n = await inPage(tabId, () => window.__aichromeTree('interactive', 30, null, 'main').pageContent.split('\n').filter(Boolean).length, []).catch(() => 0);
+    if (n >= 3) break;
+    await sleep(250);
+  }
+  return state;
+}
+
+const clip = (s, max) => (s.length > max ? `${s.substring(0, max)}\n…[${s.length - max} more chars: use read_page or find]` : s);
+
+// Compact list of the main content's controls, returned with navigations so a read_page call isn't needed.
+async function snapshot(tabId, max = 3000) {
+  await settle(tabId);
+  const res = await inPage(tabId, () => window.__aichromeTree('interactive', 30, null, 'main'), []);
+  if (!res?.pageContent) return '';
+  return `Controls (main content; read_page for everything):\n${clip(res.pageContent, max)}`;
+}
+
+// Poll until text/selector appears (or is gone), or the URL contains a string.
+async function waitFor(tabId, { text, selector, url, gone = false, duration = 10 }) {
+  if (!text && !selector && !url) throw new Error('wait_for needs text, selector or url');
+  const limit = Math.min(60, Math.max(0.5, Number(duration) || 10)) * 1000;
+  const start = Date.now();
+  while (true) {
+    let hit = false;
+    if (url) hit = ((await chrome.tabs.get(tabId).catch(() => null))?.url || '').includes(url);
+    else {
+      hit = await inPage(tabId, (text, selector) => {
+        const visible = (el) => el && (el.checkVisibility ? el.checkVisibility() : el.offsetParent !== null);
+        if (selector) {
+          try { return [...document.querySelectorAll(selector)].some(visible); } catch (e) { throw new Error(`Bad selector: ${e.message}`); }
+        }
+        return (document.body?.innerText || '').toLowerCase().includes(String(text).toLowerCase());
+      }, [text || null, selector || null]).catch((e) => { if (/Bad selector/.test(e.message)) throw e; return false; });
+    }
+    if (hit !== gone) return `Condition met after ${((Date.now() - start) / 1000).toFixed(1)}s: ${url ? `URL contains "${url}"` : `${selector ? `selector "${selector}"` : `text "${text}"`} ${gone ? 'is gone' : 'is present'}`}`;
+    if (Date.now() - start > limit) throw new Error(`Timed out after ${limit / 1000}s waiting for ${url || selector || `"${text}"`}${gone ? ' to disappear' : ''}`);
+    await sleep(250);
+  }
 }
 
 async function viewportCenter(tabId) {
@@ -1133,10 +1437,10 @@ async function inPage(tabId, func, args) {
     if (result !== undefined && result !== null) return result;
   } catch (e) {
     const msg = String(e?.message || e);
-    if (!/__aichrome(Tree|Ref|Describe|Locate) is not a function/.test(msg)) throw new Error(msg.replace(/^Error: /, ''));
+    if (!/__aichrome\w* is not a function/.test(msg)) throw new Error(msg.replace(/^Error: /, ''));
   }
-  // Our content scripts are missing (page opened before the extension loaded, or orphaned by a reload).
-  const [{ result: ready } = {}] = await exec({ func: () => typeof window.__aichromeTree === 'function' });
+  // Our content scripts are missing or outdated (page opened before the extension loaded, or orphaned by a reload).
+  const [{ result: ready } = {}] = await exec({ func: () => typeof window.__aichromeAnnotate === 'function' });
   if (ready) return result;
   await exec({ files: ['tree.js', 'indicator.js'] });
   return run();

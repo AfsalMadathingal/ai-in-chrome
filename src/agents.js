@@ -1,7 +1,7 @@
 // Side-panel chats: the native host runs the user's own terminal AI (Claude Code or Codex, already logged in)
 // headless, one process per conversation, and streams normalized events back to the side panel.
 // The AI drives the browser through the same ai-in-chrome MCP tools as any other client.
-import { spawn } from 'node:child_process';
+import { spawn, execFile } from 'node:child_process';
 import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -121,6 +121,15 @@ function toolResultText(content) {
   return '';
 }
 
+// How full the chat's context is after this turn: the last model call's input against the model's window.
+function contextUse(m) {
+  const last = m.usage?.iterations?.at(-1) || m.usage;
+  const window = Object.values(m.modelUsage || {})[0]?.contextWindow;
+  if (!last || !window) return undefined;
+  const used = (last.input_tokens || 0) + (last.cache_read_input_tokens || 0) + (last.cache_creation_input_tokens || 0) + (last.output_tokens || 0);
+  return { used, window };
+}
+
 export class Agents {
   constructor(emit, log) {
     this.emit = emit; // (sid, event) => void
@@ -142,6 +151,7 @@ export class Agents {
       if (msg.type === 'agent_reset') return this.reset(sid);
       if (msg.type === 'agent_voice_fix') return this.voiceFix(msg);
       if (msg.type === 'agent_suggest') return this.suggest(msg);
+      if (msg.type === 'agent_pick_folder') return this.pickFolder(msg);
     } catch (e) {
       this.emit(sid, { t: 'error', message: e.message });
       this.emit(sid, { t: 'busy', on: false });
@@ -224,6 +234,22 @@ export class Agents {
   }
 
   // The likely next message, when the chat's AI didn't end its answer with one.
+// The system's folder dialog, so the panel gets a real path (a web page can't): macOS "choose folder", Linux zenity.
+  pickFolder({ sid, id, current = '~' }) {
+    const start = expand(current);
+    const from = fs.existsSync(start) ? start : os.homedir();
+    const done = (err, out) => {
+      const picked = String(out || '').trim().replace(/(.)\/$/, '$1');
+      this.emit(sid, { t: 'folder_picked', id, text: !err && picked ? picked : null, error: err && !/cancel|-128/i.test(String(err.message)) ? String(err.message).slice(0, 200) : undefined });
+    };
+    if (process.platform === 'darwin') {
+      const esc = (s) => s.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      return execFile('osascript', ['-e', 'activate', '-e', `POSIX path of (choose folder with prompt "Working folder for the AI in Chrome side panel" default location POSIX file "${esc(from)}")`], { timeout: 10 * 60 * 1000 }, done);
+    }
+    if (process.platform === 'linux') return execFile('zenity', ['--file-selection', '--directory', `--filename=${from}/`], { timeout: 10 * 60 * 1000 }, done);
+    this.emit(sid, { t: 'folder_picked', id, text: null, error: 'No folder dialog on this system. Type the path instead.' });
+  }
+
   suggest({ sid, id, question = '', answer = '', kind, model, ollamaUrl }) {
     const user = `User: ${question.slice(0, 1500)}\n\nAssistant: ${answer.slice(-3000)}`;
     return this.quick(SUGGEST_PROMPT, user, { kind, model, ollamaUrl }).then((text) => this.emit(sid, { t: 'suggested', id, text }));
@@ -352,6 +378,8 @@ export class Agents {
       return;
     }
     if (m.type === 'control_response') return;
+    // The account's plan limits (5-hour session, weekly), sent with every run: the panel shows them.
+    if (m.type === 'rate_limit_event') return this.emit(s.sid, { t: 'usage', info: m.rate_limit_info });
     if (m.type === 'result') {
       // A message sent after Claude's last step wasn't read in this turn; it starts the next one, so keep working.
       if (s.unread > 0 && !m.is_error) return;
@@ -360,6 +388,7 @@ export class Agents {
         t: 'done', ms: m.duration_ms, cost: m.total_cost_usd, turns: m.num_turns,
         tokens: m.usage ? (m.usage.input_tokens || 0) + (m.usage.cache_read_input_tokens || 0) + (m.usage.cache_creation_input_tokens || 0) + (m.usage.output_tokens || 0) : undefined,
         error: m.is_error ? m.result || m.subtype : undefined,
+        context: contextUse(m),
       });
     }
   }

@@ -1,12 +1,26 @@
 // AI in Chrome: accessibility-tree snapshot with stable element refs (ref_N).
 // Runs in the extension's isolated world; background.js calls window.__aichromeTree / __aichromeRef.
 (() => {
-  if (window.__aichromeLocate) return; // (checks the newest function, so a page holding an older copy gets this one)
+  if (window.__aichromeAnnotate) return; // (checks the newest function, so a page holding an older copy gets this one)
 
-  const refs = new Map(); // ref -> WeakRef<Element>
-  const reverse = new WeakMap(); // Element -> ref
-  let counter = 0;
+  // Keep refs across a re-injection (an older copy of this script may already have handed some out).
+  const refs = window.__aichromeRefs || new Map(); // ref -> WeakRef<Element>
+  const reverse = window.__aichromeReverse || new WeakMap(); // Element -> ref
+  window.__aichromeRefs = refs;
+  window.__aichromeReverse = reverse;
+  let counter = window.__aichromeCounter || 0;
   const MAX_CHARS = 50000;
+
+  // Count DOM changes so a click can report whether the page reacted.
+  let mutations = 0;
+  try {
+    new MutationObserver((list) => {
+      for (const m of list) mutations += m.addedNodes.length + m.removedNodes.length + (m.type === 'attributes' ? 1 : 0);
+    }).observe(document.documentElement, {
+      childList: true, subtree: true, attributes: true,
+      attributeFilter: ['open', 'aria-expanded', 'aria-checked', 'aria-pressed', 'aria-hidden', 'hidden', 'disabled'],
+    });
+  } catch {}
 
   const SKIP = new Set(['script', 'style', 'noscript', 'template', 'meta', 'link', 'head']);
   const INTERACTIVE_ROLES = new Set([
@@ -29,6 +43,7 @@
     const existing = reverse.get(el);
     if (existing && refs.get(existing)?.deref() === el) return existing;
     const ref = 'ref_' + ++counter;
+    window.__aichromeCounter = counter;
     refs.set(ref, new WeakRef(el));
     reverse.set(el, ref);
     return ref;
@@ -107,6 +122,9 @@
     if ((tag === 'input' || tag === 'textarea') && el.type !== 'password' && el.value && !['checkbox', 'radio'].includes(el.type)) {
       line += ` value="${clean(el.value)}"`;
     }
+    if (tag === 'input' && el.type === 'file') {
+      line += ' (file input' + (el.accept ? ` accept="${clean(el.accept)}"` : '') + (isVisible(el) ? '' : ', hidden') + ': use with file_upload)';
+    }
     if (el.checked) line += ' (checked)';
     if (el.disabled || el.getAttribute('aria-disabled') === 'true') line += ' (disabled)';
     const expanded = el.getAttribute('aria-expanded');
@@ -115,13 +133,37 @@
     // Flag elements outside the viewport so agents prefer the visible copy of duplicated widgets.
     const r = el.getBoundingClientRect();
     if (r.width && (r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth)) line += ' (offscreen)';
+    // Tables repeat the same short button ("Edit", "Delete") on every row: say which row this one is in.
+    if ((role === 'button' || role === 'link') && (!name || name.trim().length <= 24)) {
+      const row = el.closest('tr, [role="row"]');
+      if (row) {
+        // The row's data cells (not the ones holding the action buttons).
+        const cells = [...row.querySelectorAll('td, th, [role="cell"], [role="gridcell"]')]
+          .filter((c) => !c.querySelector('a[href], button, input, select, [role="button"]'))
+          .map((c) => clean(c.innerText || '')).filter(Boolean);
+        const text = (cells.length ? cells.join(' / ') : clean(row.innerText || '').replace(clean(name || ''), '').trim()).substring(0, 60);
+        if (text) line += ` (row: "${text}")`;
+      }
+    }
     return line;
+  }
+
+  const LANDMARK_SKIP = new Set(['navigation', 'complementary']);
+  function outsideMain(el, role) {
+    if (LANDMARK_SKIP.has(role)) return true;
+    const tag = el.tagName.toLowerCase();
+    return (tag === 'header' || tag === 'footer' || role === 'banner' || role === 'contentinfo') && !el.closest('main, article, [role="main"], dialog, [role="dialog"]');
   }
 
   function walk(el, depth, maxDepth, filter, out) {
     if (depth > maxDepth || out.size > MAX_CHARS) return;
     const tag = el.tagName.toLowerCase();
-    if (SKIP.has(tag) || !isVisible(el)) return;
+    if (SKIP.has(tag)) return;
+    // File inputs are usually hidden behind a styled button, but they are what file_upload needs.
+    const fileInput = tag === 'input' && el.type === 'file';
+    if (!fileInput && !isVisible(el)) return;
+    if (out.scope === 'main' && el !== out.root && outsideMain(el, roleOf(el))) return;
+    if (fileInput) out.files.add(el);
 
     const role = roleOf(el);
     const interactive = isInteractive(el, role);
@@ -198,7 +240,7 @@
     return refFor(best);
   };
 
-  window.__aichromeTree = (filter = 'all', maxDepth = 15, refId = null) => {
+  window.__aichromeTree = (filter = 'all', maxDepth = 15, refId = null, scope = 'all') => {
     const viewport = { width: window.innerWidth, height: window.innerHeight, scrollX: Math.round(scrollX), scrollY: Math.round(scrollY) };
     let root = document.body || document.documentElement;
     if (refId) {
@@ -207,8 +249,17 @@
         return { error: `Element with ref_id '${refId}' not found. It may have been removed from the page. Use read_page without ref_id to get the current page state.`, pageContent: '', viewport };
       }
     }
-    const out = { lines: [], size: 0 };
+    const out = { lines: [], size: 0, files: new Set(), scope, root };
     walk(root, 0, maxDepth, filter === 'interactive' ? 'interactive' : 'all', out);
+    // File inputs inside hidden containers never got walked: list them anyway.
+    if (!refId) {
+      for (const el of document.querySelectorAll('input[type="file"]')) {
+        if (out.files.has(el)) continue;
+        const line = describe(el, 'button', 0);
+        out.lines.push(line);
+        out.size += line.length + 1;
+      }
+    }
     if (out.size > MAX_CHARS) {
       return {
         error: `Output exceeds ${MAX_CHARS} characters. Use filter "interactive", ${refId ? 'a smaller depth or a more specific child element' : 'ref_id or a smaller depth to focus'}.`,
@@ -217,5 +268,154 @@
       };
     }
     return { pageContent: out.lines.join('\n'), viewport };
+  };
+
+  const onScreen = (r) => r.bottom >= 0 && r.top <= innerHeight && r.right >= 0 && r.left <= innerWidth;
+  const short = (el) => {
+    const role = roleOf(el) || el.tagName.toLowerCase();
+    const name = clean(nameOf(el, role) || '');
+    return `${role}${name ? ` "${name}"` : ''} [${refFor(el)}]`;
+  };
+
+  // Element by CSS selector and/or visible text / accessible name, so a click needs no find call first.
+  // Returns { ref, desc } or { error, candidates }.
+  window.__aichromeQuery = ({ selector, label } = {}) => {
+    let pool;
+    try {
+      pool = selector ? [...document.querySelectorAll(selector)] : [...document.querySelectorAll('body *')];
+    } catch (e) {
+      return { error: `Bad selector: ${e.message}` };
+    }
+    const want = label ? String(label).replace(/\s+/g, ' ').trim().toLowerCase() : '';
+    let best = null;
+    let bestScore = 0;
+    for (const el of pool) {
+      if (SKIP.has(el.tagName.toLowerCase())) continue;
+      const fileInput = el.tagName === 'INPUT' && el.type === 'file';
+      if (!fileInput && !isVisible(el)) continue;
+      const r = el.getBoundingClientRect();
+      if (!fileInput && (!r.width || !r.height)) continue;
+      const role = roleOf(el);
+      let score = 1;
+      if (want) {
+        const name = String(nameOf(el, role) || el.getAttribute('placeholder') || el.value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        if (!name) continue;
+        if (name === want) score += 6;
+        else if (name.startsWith(want)) score += 3;
+        else if (name.includes(want) && name.length <= want.length * 3) score += 2;
+        else continue;
+      }
+      if (isInteractive(el, role) || (el.tagName === 'LABEL' && el.control)) score += 2;
+      if (onScreen(r)) score += 1;
+      // Prefer the innermost element when a wrapper has the same text.
+      if (best && best.contains(el) && score >= bestScore) score += 0.5;
+      if (score > bestScore) {
+        best = el;
+        bestScore = score;
+      }
+    }
+    if (!best) return { error: `No visible element matches ${selector ? `selector "${selector}"` : ''}${selector && label ? ' and ' : ''}${label ? `text "${label}"` : ''}.` };
+    return { ref: refFor(best), desc: short(best) };
+  };
+
+  // The <input type="file"> that belongs to an element: itself, its label's control, one near it, or the page's only one.
+  window.__aichromeFileInput = (ref) => {
+    const el = window.__aichromeRef(ref);
+    if (!el) return null;
+    const isFile = (n) => n && n.tagName === 'INPUT' && n.type === 'file';
+    if (isFile(el)) return ref;
+    if (isFile(el.control)) return refFor(el.control);
+    const label = el.closest('label');
+    if (label && isFile(label.control)) return refFor(label.control);
+    let node = el;
+    for (let i = 0; i < 6 && node; i++, node = node.parentElement) {
+      const inputs = node.querySelectorAll('input[type="file"]');
+      if (inputs.length === 1) return refFor(inputs[0]);
+      if (inputs.length > 1) break;
+    }
+    const all = document.querySelectorAll('input[type="file"]');
+    return all.length === 1 ? refFor(all[0]) : null;
+  };
+
+  // What a click can change: URL, dialogs, focus, the DOM, and the clicked control's own state.
+  function controlState(el) {
+    if (!el || !el.isConnected) return null;
+    const box = el.matches('input[type=checkbox], input[type=radio]') ? el
+      : el.closest('label')?.control || el.querySelector?.('input[type=checkbox], input[type=radio]') || el.control;
+    const s = {};
+    if (box && (box.type === 'checkbox' || box.type === 'radio')) s.checked = box.checked;
+    for (const a of ['aria-checked', 'aria-pressed', 'aria-expanded', 'aria-selected']) {
+      const v = el.getAttribute(a);
+      if (v != null) s[a.slice(5)] = v;
+    }
+    if (el.tagName === 'SELECT' || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') s.value = clean(el.value || '').substring(0, 60);
+    if (el.disabled) s.disabled = true;
+    return s;
+  }
+
+  window.__aichromeState = (x, y) => {
+    let el = x == null ? null : document.elementFromPoint(x, y);
+    // Report the control the user meant, not the inner <span> that got the event.
+    const hit = el?.closest('a[href], button, input, select, textarea, label, summary, [role], [tabindex], [onclick]') || el;
+    const dialogs = [...document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [aria-modal="true"]')]
+      .filter((d) => isVisible(d) && d.getBoundingClientRect().height > 0)
+      .map((d) => ({ ref: refFor(d), name: clean(nameOf(d, 'dialog') || d.querySelector('h1,h2,h3')?.innerText || '').substring(0, 60) }));
+    const toasts = [...document.querySelectorAll('[role="alert"], [role="status"], [aria-live="assertive"], [aria-live="polite"]')]
+      .filter((d) => isVisible(d)).map((d) => clean(d.innerText || '')).filter(Boolean).slice(0, 3);
+    const focus = document.activeElement && document.activeElement !== document.body ? short(document.activeElement) : null;
+    return {
+      url: location.href,
+      title: document.title,
+      mutations,
+      dialogs,
+      toasts,
+      focus,
+      target: hit ? short(hit) : null,
+      targetRef: hit ? refFor(hit) : null,
+      control: hit ? controlState(hit) : null,
+    };
+  };
+
+  window.__aichromeControlState = (ref) => controlState(window.__aichromeRef(ref));
+
+  // Put a temporary attribute on a ref's element so main-world code (CDP Runtime.evaluate) can find it.
+  window.__aichromeMark = (ref, token) => {
+    const el = window.__aichromeRef(ref);
+    if (!el) return false;
+    el.setAttribute('data-aichrome-pick', token);
+    return true;
+  };
+
+  // Draw ref labels over the visible interactive elements (for an annotated screenshot); returns the legend.
+  window.__aichromeAnnotate = (on) => {
+    document.getElementById('__aichrome_marks')?.remove();
+    if (!on) return [];
+    const layer = document.createElement('div');
+    layer.id = '__aichrome_marks';
+    layer.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:2147483646;';
+    const legend = [];
+    const seen = new Set();
+    for (const el of document.querySelectorAll('a[href], button, input, select, textarea, summary, [role], [tabindex], [onclick], [contenteditable="true"]')) {
+      const role = roleOf(el);
+      if (!isInteractive(el, role) || el.closest('#__aichrome_marks')) continue;
+      const r = el.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4 || !onScreen(r) || !isVisible(el)) continue;
+      const key = `${Math.round(r.left)},${Math.round(r.top)}`;
+      if (seen.has(key)) continue; // nested controls on the same spot
+      seen.add(key);
+      const ref = refFor(el);
+      const box = document.createElement('div');
+      box.style.cssText = `position:fixed;left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;outline:2px solid #e8590c;border-radius:2px;`;
+      const tagEl = document.createElement('span');
+      tagEl.textContent = ref.slice(4);
+      tagEl.style.cssText = 'position:absolute;left:-2px;top:-14px;background:#e8590c;color:#fff;font:bold 11px/13px monospace;padding:0 3px;border-radius:2px;';
+      box.appendChild(tagEl);
+      layer.appendChild(box);
+      const name = clean(nameOf(el, role) || el.getAttribute('placeholder') || '').substring(0, 40);
+      legend.push(`${ref.slice(4)} ${role || el.tagName.toLowerCase()}${name ? ` "${name}"` : ''}`);
+      if (legend.length >= 150) break;
+    }
+    document.documentElement.appendChild(layer);
+    return legend;
   };
 })();

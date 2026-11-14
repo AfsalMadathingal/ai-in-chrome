@@ -114,7 +114,9 @@ export async function emit(sid, ev) {
 // Events from the native host (headless Claude Code / Codex).
 export function onAgentEvent(sid, ev) {
   // Side results, not part of the chat.
-  if (ev.t === 'voice_fixed' || ev.t === 'suggested') return broadcast(sid, { type: ev.t, id: ev.id, text: ev.text });
+  if (ev.t === 'voice_fixed' || ev.t === 'suggested' || ev.t === 'folder_picked') return broadcast(sid, { type: ev.t, id: ev.id, text: ev.text, error: ev.error });
+  // Plan usage belongs to the account, not the chat: every panel reads it from storage.
+  if (ev.t === 'usage') return ev.info && chrome.storage.local.set({ claudeUsage: { ...ev.info, at: Date.now() } });
   emit(sid, ev);
 }
 
@@ -143,6 +145,7 @@ chrome.runtime.onConnect.addListener((port) => {
       else if (msg.type === 'send_now') stop(msg.sid);
       else if (msg.type === 'voice_fix' && !deps.hostSend({ ...msg, type: 'agent_voice_fix' })) port.postMessage({ type: 'voice_fixed', id: msg.id, text: null });
       else if (msg.type === 'suggest' && !deps.hostSend({ ...msg, type: 'agent_suggest' })) port.postMessage({ type: 'suggested', id: msg.id, text: null });
+      else if (msg.type === 'pick_folder' && !deps.hostSend({ ...msg, type: 'agent_pick_folder' })) port.postMessage({ type: 'folder_picked', id: msg.id, text: null, error: 'Native host not connected.' });
       else if (msg.type === 'unqueue') {
         const c = await chat(msg.sid);
         c.queue = (c.queue || []).filter((q) => q.id !== msg.id);
@@ -223,7 +226,7 @@ async function tabLines(tabId, tabIds) {
 
 // ---------- follow-ups typed while the AI works: queued, then sent together when it finishes ----------
 
-const queueMsg = (sid, c) => ({ type: 'queue', sid, items: (c.queue || []).map(({ id, text, thumbs }) => ({ id, text, images: thumbs?.length || 0 })) });
+const queueMsg = (sid, c) => ({ type: 'queue', sid, items: (c.queue || []).map(({ id, text, label, thumbs }) => ({ id, text: label || text, images: thumbs?.length || 0 })) });
 
 async function flushQueue(sid) {
   const c = await chat(sid);
@@ -244,7 +247,7 @@ async function flushQueue(sid) {
 }
 
 async function send(msg) {
-  const { sid, kind, text, tabId, tabIds = [], cwd, mode, model, ollamaUrl, images = [], thumbs = [] } = msg;
+  const { sid, kind, text, label, tabId, tabIds = [], cwd, mode, model, ollamaUrl, images = [], thumbs = [] } = msg;
   const c = await chat(sid);
   // Claude Code reads a message mid-task (at its next step); other AIs get it when they finish.
   if (c.busy && kind === 'claude' && c.kind === 'claude') return steer(msg, c);
@@ -256,9 +259,9 @@ async function send(msg) {
   c.kind = kind;
   if (tabId != null && !c.parent) deps.setCurrentTab(tabId); // a background task works in its own tab
   const line = c.parent ? `[Tab: your own background tab, opened at ${c.url || 'about:blank'}]` : await tabLines(tabId, tabIds);
-  await emit(sid, { t: 'user', text, tab: line, thumbs: thumbs.length ? thumbs : undefined });
+  await emit(sid, { t: 'user', text, label, tab: line, thumbs: thumbs.length ? thumbs : undefined });
   const index = await chatIndex();
-  await touchChat(sid, { title: index[sid]?.title || text.replace(/\s+/g, ' ').slice(0, 80) || 'Image', kind });
+  await touchChat(sid, { title: index[sid]?.title || (label || text).replace(/\s+/g, ' ').slice(0, 80) || 'Image', kind });
   // What the AI gets but the chat doesn't show: news from @agent tasks, and a nudge for the suggested reply.
   const notes = c.parent ? '' : bgNotes(c);
   const nudge = kind === 'terminal' ? '' : '\n\n<reminder>End your reply with <suggest>…</suggest> (the user\'s likely next message).</reminder>';
@@ -287,9 +290,9 @@ async function send(msg) {
   }
 }
 
-async function steer({ sid, text, tabId, tabIds = [], images = [], thumbs = [] }, c) {
+async function steer({ sid, text, label, tabId, tabIds = [], images = [], thumbs = [] }, c) {
   const line = c.parent ? '' : await tabLines(tabId, tabIds);
-  await emit(sid, { t: 'user', text, tab: line || undefined, thumbs: thumbs.length ? thumbs : undefined, steer: true });
+  await emit(sid, { t: 'user', text, label, tab: line || undefined, thumbs: thumbs.length ? thumbs : undefined, steer: true });
   const full = `${line ? `${line}\n` : ''}<the user sent this while you were working; take it into account>\n${text}`;
   if (!deps.hostSend({ type: 'agent_send', sid, kind: 'claude', text: full, images })) {
     throw new Error('Native host not connected. Run `aichrome install`, then click the extension icon.');
@@ -328,6 +331,24 @@ const READ_ONLY_COMPUTER = new Set(['screenshot', 'zoom', 'wait', 'scroll', 'scr
 const WEB_READ = new Set(['WebSearch', 'WebFetch', 'web_search']);
 // File edits: "Act without asking" covers them as well. Shell commands still ask.
 const FILE_EDIT = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+// File reads: Claude Code only asks about these outside its working folder; "Act without asking" allows them anywhere.
+const FILE_READ = new Set(['Read', 'Glob', 'Grep', 'LS', 'NotebookRead']);
+
+// A shell command that only reads: one plain command from a short list, with no pipes, chaining, redirects,
+// substitution or flags that write or run things. Anything else still asks, even in "Act without asking".
+const READ_CMDS = new Set(['ls', 'pwd', 'cat', 'head', 'tail', 'wc', 'find', 'tree', 'stat', 'file', 'du', 'df', 'grep', 'rg', 'which', 'realpath', 'basename', 'dirname', 'echo']);
+function readOnlyShell(command) {
+  const c = String(command || '').trim().replace(/^cd\s+("[^"]*"|'[^']*'|[^\s;&|]+)\s*&&\s*/, ''); // "cd folder && ls" is fine
+  if (!c || /[;&|`$<>(){}\n\\]/.test(c)) return false;
+  const [bin, ...args] = c.split(/\s+/);
+  if (!READ_CMDS.has(bin)) return false;
+  if (bin === 'find' && args.some((a) => /^-(exec|execdir|ok|okdir|delete|fprint|fprintf|fls)/.test(a))) return false;
+  if ((bin === 'rg' || bin === 'grep') && args.some((a) => /^--pre/.test(a))) return false;
+  return true;
+}
+
+// What "Act without asking" lets through without a card.
+const autoOk = (tool, input, browser) => browser || WEB_READ.has(tool) || FILE_EDIT.has(tool) || FILE_READ.has(tool) || (tool === 'Bash' && readOnlyShell(input?.command));
 
 function permissionKey(tool, input) {
   const short = tool.replace(/^mcp__ai-in-chrome__/, '');
@@ -352,7 +373,7 @@ async function currentMode(fallback) {
 // Switching to "Act without asking" also answers the browser permission cards already waiting.
 function setMode(mode) {
   if (mode !== 'auto') return;
-  for (const a of approvals.values()) if (a.browser || FILE_EDIT.has(a.key)) a.resolve('allow');
+  for (const a of approvals.values()) if (a.auto) a.resolve('allow');
 }
 
 // Claude's AskUserQuestion: show the questions as a card in the panel, and hand the picked answers back to Claude.
@@ -384,7 +405,8 @@ export async function approve_action({ sid, mode, tool_name: tool = '', input = 
   const short = tool.replace(/^mcp__ai-in-chrome__/, '');
   if (short === 'approve_action') return deny('Not allowed.');
   if (tool === 'AskUserQuestion') return askUser({ sid, input, allow: (answers) => JSON.stringify({ behavior: 'allow', updatedInput: { ...input, answers } }), deny });
-  if ((browser || WEB_READ.has(tool) || FILE_EDIT.has(tool)) && (await currentMode(mode)) === 'auto') return allow;
+  const auto = autoOk(tool, input, browser);
+  if (auto && (await currentMode(mode)) === 'auto') return allow;
   if (browser && (READ_ONLY.has(short) || (short === 'computer' && READ_ONLY_COMPUTER.has(input.action)))) return allow;
   const key = browser ? permissionKey(tool, input) : tool;
   if (allowed.get(sid)?.has(key)) return allow;
@@ -396,7 +418,7 @@ export async function approve_action({ sid, mode, tool_name: tool = '', input = 
   const agent = where !== sid ? chats.get(sid)?.agent : undefined;
   await emit(where, { t: 'permission', id, tool: browser ? short : tool, key, browser, agent, input: JSON.stringify(input).slice(0, 1500) });
   const decision = await new Promise((resolve) => {
-    approvals.set(id, { resolve, browser, sid, key });
+    approvals.set(id, { resolve, browser, sid, key, auto });
     setTimeout(() => resolve('timeout'), 5 * 60 * 1000);
   });
   approvals.delete(id);

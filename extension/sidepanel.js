@@ -243,7 +243,7 @@ const KEYWORDS = new Set(('const let var function return if else for while do br
   'def lambda pass with is not and or elif None True False self print fn pub mut impl struct enum use mod match ' +
   'interface type public private protected static final package func go defer chan map range select ' +
   'SELECT FROM WHERE AND OR INSERT INTO VALUES UPDATE SET DELETE JOIN ON GROUP BY ORDER LIMIT AS CREATE TABLE ' +
-  'echo export local then fi esac done').split(' '));
+  'echo export local then fi esac done cd git npm npx node sed grep head tail cat ls rm mv cp mkdir find xargs curl').split(' '));
 const HASH_COMMENTS = /^(py|python|sh|bash|zsh|shell|console|yaml|yml|toml|rb|ruby|r|perl|dockerfile|make|makefile|ini|conf)$/i;
 const TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->)|(#[^\n]*)|("(?:\\.|[^"\\\n])*"|'(?:\\.|[^'\\\n])*'|`(?:\\.|[^`\\])*`)|(\b\d[\d_]*(?:\.\d+)?(?:e[+-]?\d+)?\b|\b0x[\da-f]+\b)|([A-Za-z_$][\w$]*)(\s*\()?|(<\/?[A-Za-z][\w-]*)/gi;
 
@@ -425,6 +425,134 @@ function pretty(s) {
   return o ? JSON.stringify(o, null, 2) : String(s ?? '');
 }
 
+// ---------- step details: what a tool did, in a readable form instead of raw JSON ----------
+
+// Break a one-line shell command into readable lines: one per statement, && / || on their own line, loop bodies indented.
+// Quotes, $( ), ( ) and backticks are kept intact.
+function formatShell(cmd) {
+  cmd = String(cmd || '').trim();
+  if (cmd.length < 60 && !/[;\n]|&&|\|\|/.test(cmd)) return cmd;
+  const parts = [];
+  let cur = '';
+  let quote = '';
+  let depth = 0;
+  const push = (op) => {
+    if (cur.trim()) parts.push({ text: cur.trim(), op });
+    cur = '';
+  };
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i];
+    const two = cmd.slice(i, i + 2);
+    if (quote) {
+      cur += ch;
+      if (ch === '\\' && quote !== "'") cur += cmd[++i] ?? '';
+      else if (ch === quote) quote = '';
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      cur += ch;
+    } else if (ch === '(') {
+      depth++;
+      cur += ch;
+    } else if (ch === ')') {
+      depth = Math.max(0, depth - 1);
+      cur += ch;
+    } else if (depth === 0 && (ch === ';' || ch === '\n')) push('');
+    else if (depth === 0 && (two === '&&' || two === '||')) {
+      push('');
+      cur = `${two} `;
+      i++;
+    } else cur += ch;
+  }
+  push('');
+  const lines = [];
+  let indent = 0;
+  const pad = () => '  '.repeat(Math.max(0, indent));
+  for (const { text } of parts) {
+    const kw = /^(do|then|else)\s+([\s\S]+)$/.exec(text);
+    if (kw) {
+      if (kw[1] === 'else') indent--;
+      lines.push(pad() + kw[1]);
+      indent++;
+      lines.push(pad() + kw[2]);
+    } else if (/^(done|fi|esac)\b/.test(text)) {
+      indent--;
+      lines.push(pad() + text);
+    } else if (/^(do|then|else)$/.test(text)) {
+      if (text === 'else') indent--;
+      lines.push(pad() + text);
+      indent++;
+    } else lines.push(pad() + (/^(&&|\|\|)\s/.test(text) ? `  ${text.replace(/^(&&|\|\|)\s+/, '$1 ')}` : text));
+  }
+  return lines.join('\n');
+}
+
+const LANG_BY_EXT = { js: 'js', mjs: 'js', cjs: 'js', jsx: 'js', ts: 'ts', tsx: 'ts', py: 'py', rb: 'rb', go: 'go', rs: 'rust', sh: 'sh', zsh: 'sh', bash: 'sh', json: 'json', css: 'css', html: 'html', md: 'md', yml: 'yaml', yaml: 'yaml', toml: 'toml', sql: 'sql' };
+const langOf = (p) => LANG_BY_EXT[String(p || '').split('.').pop().toLowerCase()] || 'text';
+const codeHTML = (code, lang) => (lang === 'text' || lang === 'md' ? esc(code) : highlight(code, lang));
+const fmtTimeout = (ms) => (ms >= 60000 ? `${Math.round(ms / 60000)} min` : `${Math.round(ms / 1000)} s`);
+
+// Up to n lines; the rest is folded behind "Show all".
+function clampLines(text, n = 14) {
+  const lines = String(text).split('\n');
+  return { head: lines.slice(0, n).join('\n'), more: Math.max(0, lines.length - n), total: lines.length };
+}
+
+function kvHTML(o) {
+  const rows = Object.entries(o || {}).filter(([, v]) => v !== undefined && v !== null && v !== '' && !(Array.isArray(v) && !v.length));
+  if (!rows.length) return '';
+  return `<dl class="kv">${rows.map(([k, v]) => {
+    const val = typeof v === 'string' ? v : JSON.stringify(v, null, typeof v === 'object' && JSON.stringify(v).length > 60 ? 2 : 0);
+    return `<dt>${esc(k.replace(/_/g, ' '))}</dt><dd>${esc(clip(val, 1500))}</dd>`;
+  }).join('')}</dl>`;
+}
+
+function diffHTML(oldS, newS) {
+  const side = (s, sign, cls) => String(s || '').split('\n').slice(0, 40).map((l) => `<div class="${cls}"><span>${sign}</span>${esc(l) || ' '}</div>`).join('');
+  return `<div class="diff">${side(oldS, '−', 'del')}${side(newS, '+', 'add')}</div>`;
+}
+
+// The body of an opened step (and of a permission card): readable per tool, a labelled list otherwise.
+function detailHTML(name, input) {
+  const n = strip(name);
+  const o = parseInput(input) || {};
+  if (n === 'Bash' || n === 'shell' || n === 'command_execution') {
+    const cmd = Array.isArray(o.command) ? o.command.join(' ') : o.command || (typeof input === 'string' && !o.command ? input : '');
+    const meta = [o.run_in_background && 'in the background', o.timeout && `time limit ${fmtTimeout(o.timeout)}`].filter(Boolean).join(' · ');
+    return `<div class="term"><div class="th"><span class="dot"></span>Shell${meta ? `<small>${esc(meta)}</small>` : ''}<button class="mini" data-copy-cmd title="Copy command">${icon('copy')}</button></div><pre class="cmd"><span class="ps">$</span> <code>${highlight(formatShell(cmd), 'sh')}</code></pre></div>`;
+  }
+  if (n === 'Edit' || n === 'MultiEdit') {
+    const edits = n === 'MultiEdit' ? o.edits || [] : [o];
+    return `<div class="fpath">${icon('pencil')}<span>${esc(o.file_path || '')}</span>${o.replace_all ? '<small>every match</small>' : ''}</div>${edits.slice(0, 6).map((e) => diffHTML(e.old_string, e.new_string)).join('')}`;
+  }
+  if (n === 'Write') {
+    const { head, more } = clampLines(o.content || '', 20);
+    return `<div class="fpath">${icon('doc')}<span>${esc(o.file_path || '')}</span><small>new file</small></div><pre class="code-prev"><code>${codeHTML(head, langOf(o.file_path))}</code></pre>${more ? `<div class="more-lines">+ ${more} more lines</div>` : ''}`;
+  }
+  if (n === 'Read') {
+    const range = o.offset || o.limit ? `lines ${o.offset || 1}–${(o.offset || 1) + (o.limit || 2000) - 1}` : '';
+    return `<div class="fpath">${icon('doc')}<span>${esc(o.file_path || '')}</span>${range ? `<small>${range}</small>` : ''}</div>`;
+  }
+  if (n === 'Grep') return kvHTML({ pattern: o.pattern, in: o.path, files: o.glob || o.type, 'case-insensitive': o['-i'] ? 'yes' : undefined, show: o.output_mode });
+  if (n === 'Glob') return kvHTML({ pattern: o.pattern, in: o.path });
+  if (n === 'WebFetch') return kvHTML({ url: o.url, asking: o.prompt });
+  if (n === 'WebSearch' || n === 'web_search') return kvHTML({ query: o.query, sites: o.allowed_domains });
+  if (n === 'Task' || n === 'Agent') return kvHTML({ subagent: o.subagent_type, task: o.description, prompt: o.prompt });
+  return kvHTML(o) || `<pre>${esc(pretty(input))}</pre>`;
+}
+
+// A tool's result: a terminal for shell output, plain text otherwise; long output folds.
+function resultHTML(name, text, ok) {
+  const n = strip(name);
+  const shell = n === 'Bash' || n === 'shell' || n === 'command_execution';
+  const t = String(text || '').replace(/\s+$/, '');
+  const label = ok ? (shell ? 'Output' : 'Result') : 'What went wrong';
+  if (!t) return shell ? `<div class="k">${label}</div><div class="out empty">No output</div>` : '';
+  const { head, more, total } = clampLines(t, shell ? 14 : 10);
+  return `<div class="k">${label}${total > 3 ? ` · ${total} lines` : ''}</div><pre class="out${shell ? ' sh' : ''}${ok ? '' : ' err'}" data-full="${more ? esc(t) : ''}">${esc(head)}</pre>${more ? `<button class="show-all">Show all ${total} lines</button>` : ''}`;
+}
+
 // ---------- turn building ----------
 
 function ensureTurn() {
@@ -484,6 +612,28 @@ function updateSteps(g) {
   g.querySelector('.gdur').textContent = !running && first ? fmtMs(end - first) : '';
 }
 
+// Buttons inside a step's details: copy the command, show the rest of long output.
+function wireDetail(root, input) {
+  root.querySelectorAll('[data-copy-cmd]:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '';
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const o = parseInput(input) || {};
+      copy(Array.isArray(o.command) ? o.command.join(' ') : o.command || '');
+    });
+  });
+  root.querySelectorAll('.show-all:not([data-wired])').forEach((b) => {
+    b.dataset.wired = '';
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const pre = b.previousElementSibling;
+      pre.textContent = pre.dataset.full;
+      pre.classList.add('full');
+      b.remove();
+    });
+  });
+}
+
 function makeStep(ev, cls) {
   const d = describe(ev.name, ev.input);
   const s = el('div', `step run${cls ? ` ${cls}` : ''}`);
@@ -491,9 +641,10 @@ function makeStep(ev, cls) {
   s.verb = d.verb;
   s.done = d.done;
   s.innerHTML = `<button class="step-row" title="Show details"><span class="si">${icon(d.icon)}</span><span class="lbl">${d.label}</span><span class="dur"></span><span class="st"><span class="spin"></span></span></button>
-    ${fold(`<div class="step-detail"><div class="k">Tool · ${esc(strip(ev.name))}</div><pre class="in"></pre></div>`)}`;
-  s.querySelector('.in').textContent = pretty(ev.input);
+    ${fold(`<div class="step-detail">${detailHTML(ev.name, ev.input)}</div>`)}`;
+  s.tool = ev.name;
   s.querySelector('.step-row').addEventListener('click', () => s.classList.toggle('open'));
+  wireDetail(s, ev.input);
   stepEls.set(ev.id, s);
   return s;
 }
@@ -567,10 +718,10 @@ function finishStep(ev) {
   s.querySelector('.st').innerHTML = icon(ev.ok ? 'check' : 'x');
   if (ev.ts && s.start) s.querySelector('.dur').textContent = fmtMs(ev.ts - s.start);
   const det = s.querySelector('.step-detail');
+  if (ev.ok && ev.text) learnRefs(ev.text);
+  det.insertAdjacentHTML('beforeend', resultHTML(s.tool, ev.text, ev.ok));
+  wireDetail(det);
   if (ev.text) {
-    if (ev.ok) learnRefs(ev.text);
-    det.insertAdjacentHTML('beforeend', `<div class="k">${ev.ok ? 'Result' : 'What went wrong'}</div><pre></pre>`);
-    det.lastElementChild.textContent = ev.text;
     // Say why a step failed without making people open it.
     if (!ev.ok) s.querySelector('.step-row').insertAdjacentElement('afterend', el('div', 'why')).textContent = clip(ev.text.replace(/^error:\s*/i, ''), 140);
   }
@@ -675,9 +826,9 @@ function renderPermission(ev) {
   const where = ev.key && ev.key.includes(':') && /\./.test(ev.key) ? ev.key.split(':').slice(1).join(':') : browserTool ? currentHost : '';
   const card = add(el('div', 'perm'), turn);
   card.innerHTML = `<div class="q"><span class="si">${icon(d.icon)}</span><div><b>${d.label}</b><small>${ev.agent ? `@${esc(ev.agent)} (background) wants to do this. ` : ''}Allow this${where ? ` on ${esc(where)}` : ''}?</small></div></div>
-    <details><summary>Show exact request</summary><pre></pre></details>
+    <details><summary>Show exact request</summary><div class="step-detail perm-detail">${detailHTML(ev.tool, ev.input)}</div></details>
     <div class="btns"><button class="btn primary" data-d="allow">Allow once</button><button class="btn" data-d="always">Always allow</button><button class="btn" data-d="deny">Deny</button></div>`;
-  card.querySelector('pre').textContent = pretty(ev.input);
+  wireDetail(card, ev.input);
   card.querySelectorAll('.btns button').forEach((b) => b.addEventListener('click', () => port?.postMessage({ type: 'approve', id: ev.id, decision: b.dataset.d })));
   permEls.set(ev.id, card);
   if (!replaying) scrollDown();
@@ -758,12 +909,16 @@ function resolveQuestion(ev) {
 }
 
 function renderDone(ev) {
+  if (ev.context) {
+    chatContext = ev.context;
+    renderUsage();
+  }
   const t = turn;
   closeTurn(ev.ts);
   if (ev.error) return add(el('div', 'error', `${icon('alert')}<span></span>`)).querySelector('span').textContent = ev.error;
   const bits = ev.replay
     ? [`Replayed ${ev.steps} step${ev.steps === 1 ? '' : 's'} in ${fmtMs(ev.ms)}`, 'no AI, 0 tokens']
-    : [ev.ms && fmtMs(ev.ms), ev.turns > 1 && `${ev.turns} turns`, ev.tokens && `${fmtTokens(ev.tokens)} tokens`, ev.cost && `$${ev.cost.toFixed(4)}`, lastModel].filter(Boolean);
+    : [ev.ms && fmtMs(ev.ms), ev.context && `${Math.round((ev.context.used / ev.context.window) * 100)}% context`, ev.turns > 1 && `${ev.turns} turns`, ev.tokens && `${fmtTokens(ev.tokens)} tokens`, ev.cost && `$${ev.cost.toFixed(4)}`, lastModel].filter(Boolean);
   const canSave = !ev.replay && t?.querySelector('.step');
   const meta = el('div', 'turn-meta', `<span class="ok">${icon(ev.replay ? 'play' : 'check')}</span><span>${esc(bits.join(' · '))}</span><span class="acts"><button class="mini" data-a="copy" title="Copy answer">${icon('copy')}</button>${canSave ? `<button class="mini" data-a="save" title="Save these steps as a workflow you can replay without the AI">${icon('bookmark')}</button>` : ''}</span>`);
   meta.querySelector('[data-a="copy"]').addEventListener('click', () => copy([...(t || log).querySelectorAll(':scope > .md')].map((m) => visible(m.raw)).filter(Boolean).join('\n\n')));
@@ -804,11 +959,22 @@ function renderWorkflowFailed(ev) {
   retry.addEventListener('click', () => runWorkflow(ev.name));
 }
 
+// Messages sent before `label` existed (and any path that forgot it): recognise the expansion.
+function labelOf(ev) {
+  if (ev.label) return ev.label;
+  let m;
+  if ((m = /^Turn the task you did in this chat into a reusable skill named "([\w-]+)"/.exec(ev.text || ''))) return `/skill ${m[1]}`;
+  const sc = (settings.shortcuts || []).find((x) => x.prompt && x.prompt.trim() === (ev.text || '').trim());
+  return sc ? `/${sc.name}` : '';
+}
+
 function renderUser(ev) {
   closeTurn(ev.ts);
   setSuggestion('');
   lastUserTs = ev.ts || 0;
-  const m = el('div', `msg-user${ev.workflow ? ' wf' : ''}`);
+  const label = ev.workflow ? '' : labelOf(ev);
+  const cmd = ev.workflow ? `Replay /${ev.workflow}` : label;
+  const m = el('div', `msg-user${cmd ? ' wf' : ''}`);
   for (const line of (ev.tab || '').split('\n').filter((l) => l.startsWith('['))) {
     const tab = el('div', 'tab', `${icon('globe')}<span></span>`);
     tab.querySelector('span').textContent = line.replace(/^\[|\]$/g, '').replace(/^Tab \d+:\s*/, '');
@@ -825,14 +991,17 @@ function renderUser(ev) {
     m.appendChild(th);
   }
   const b = el('div', 'bubble');
-  if (ev.workflow) b.innerHTML = `${icon('play')}<span></span>`;
-  (ev.workflow ? b.querySelector('span') : b).textContent = ev.workflow ? `Replay /${ev.workflow}` : ev.text;
+  if (cmd) {
+    b.innerHTML = `${icon(ev.workflow ? 'play' : 'spark')}<span></span>`;
+    b.querySelector('span').textContent = cmd;
+    if (label) b.title = ev.text; // the full prompt the AI got
+  } else b.textContent = ev.text;
   m.appendChild(b);
   const acts = el('div', 'acts', `<button class="mini" title="Copy">${icon('copy')}</button><button class="mini" title="Edit and resend">${icon('edit')}</button>`);
   const [cp, ed] = acts.querySelectorAll('button');
   cp.addEventListener('click', () => copy(ev.text));
   ed.addEventListener('click', () => {
-    input.value = ev.text;
+    input.value = label || ev.text;
     autosize();
     input.focus();
   });
@@ -881,6 +1050,8 @@ function render(ev) {
 }
 
 function resetLog() {
+  chatContext = null;
+  renderUsage();
   log.textContent = '';
   setSuggestion('');
   turn = steps = thinkEl = streamEl = null;
@@ -990,6 +1161,7 @@ function renderModelField() {
   const models = modelList(k);
   $('ollamaUrlField').hidden = !isOllama();
   $('cwdField').hidden = isOllama() || k === 'fm';
+  if ($('dirChip')) $('dirChip').parentElement.hidden = $('cwdField').hidden;
   if (document.activeElement !== $('ollamaUrl')) $('ollamaUrl').value = settings.ollamaUrl || '';
   // No default model for Ollama / Apple Intelligence: pick one (Ollama: an installed model that can use tools).
   if (!hasDefault(k) && !currentModel() && models.length) {
@@ -1010,7 +1182,7 @@ function renderModelField() {
 }
 const MODES = {
   ask: { name: 'Ask before acting', short: 'Ask', desc: 'Approve clicks, typing and navigation', icon: 'shield' },
-  auto: { name: 'Act without asking', short: 'Auto', desc: 'Browser actions and file edits run without prompts', icon: 'bolt' },
+  auto: { name: 'Act without asking', short: 'Auto', desc: 'Browser actions, file reads and edits run without prompts', icon: 'bolt' },
 };
 
 function agentState(k) {
@@ -1115,8 +1287,137 @@ function setSetting(key, value) {
 
 // ---------- menus & drawers ----------
 
+// ---------- Claude plan usage: the 5-hour session and weekly limits, from the last Claude Code run ----------
+
+let usage = null;
+let chatContext = null; // { used, window } for this chat, from its last answer
+
+const pctOf = (w) => Math.round(Math.min(1, Math.max(0, w?.utilization || 0)) * 100);
+const level = (p) => (p >= 90 ? 'bad' : p >= 75 ? 'warn' : '');
+
+function untilText(sec) {
+  const ms = sec * 1000 - Date.now();
+  if (!(ms > 0)) return 'now';
+  const m = Math.round(ms / 60000);
+  return m < 60 ? `${m} min` : m < 48 * 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.round(m / 1440)} days`;
+}
+
+function resetText(sec) {
+  if (!sec) return '';
+  const d = new Date(sec * 1000);
+  const sameDay = d.toDateString() === new Date().toDateString();
+  const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return `resets ${sameDay ? time : `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`} (in ${untilText(sec)})`;
+}
+
+function agoText(ms) {
+  const m = Math.round((Date.now() - ms) / 60000);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.round(m / 60)}h ago`;
+}
+
+function renderUsage() {
+  const btn = $('usageBtn');
+  const w = usage?.unifiedWindows || {};
+  const session = w.five_hour || (usage?.rateLimitType === 'five_hour' ? { utilization: usage.utilization, resetsAt: usage.resetsAt, status: usage.status } : null);
+  btn.hidden = false;
+  if (!session) {
+    // Nothing yet: the numbers arrive with Claude Code's next reply.
+    btn.className = 'usage';
+    btn.querySelector('.fill').setAttribute('stroke-dasharray', '0 100');
+    $('usagePct').textContent = '–';
+    btn.title = 'Claude usage appears after Claude Code replies once';
+    if (!$('usageMenu').hidden) renderUsageMenu();
+    return;
+  }
+  // A finished window shows 0: its numbers are from before it reset.
+  const expired = (x) => x?.resetsAt && x.resetsAt * 1000 < Date.now();
+  const p = expired(session) ? 0 : pctOf(session);
+  btn.className = `usage ${level(p)}`;
+  btn.querySelector('.fill').setAttribute('stroke-dasharray', `${p} 100`);
+  $('usagePct').textContent = `${p}%`;
+  btn.title = `Claude session: ${p}% used${session.resetsAt ? `, ${resetText(session.resetsAt)}` : ''}`;
+  if (!$('usageMenu').hidden) renderUsageMenu();
+}
+
+function usageRow(name, x) {
+  const done = x.resetsAt && x.resetsAt * 1000 < Date.now();
+  const p = done ? 0 : pctOf(x);
+  const limited = !done && x.status && x.status !== 'allowed';
+  return `<div class="urow ${level(p)}"><div class="uh"><b>${name}</b><span>${limited ? 'Limit reached' : `${p}% used`}</span></div>
+    <div class="ubar"><i style="width:${p}%"></i></div>
+    <small>${done ? 'Reset since the last update' : esc(resetText(x.resetsAt))}</small></div>`;
+}
+
+function renderUsageMenu() {
+  if (!usage) {
+    $('usageMenu').innerHTML = '<div class="uhead">Claude usage</div><div class="ufoot" style="border:0;margin-top:4px;padding:0">Your session and weekly limits show here after Claude Code replies once. Send any message with Claude Code selected.</div>';
+    return;
+  }
+  const w = usage?.unifiedWindows || {};
+  const rows = [w.five_hour && usageRow('Session (5 hours)', w.five_hour), w.seven_day && usageRow('This week', w.seven_day), w.seven_day_opus && usageRow('This week, Opus', w.seven_day_opus)].filter(Boolean);
+  const ctx = chatContext && Math.round((chatContext.used / chatContext.window) * 100);
+  $('usageMenu').innerHTML = `<div class="uhead">Claude usage</div>${rows.join('')}
+    ${ctx != null ? `<div class="urow ${level(ctx)}"><div class="uh"><b>This chat’s context</b><span>${ctx}%</span></div><div class="ubar"><i style="width:${ctx}%"></i></div><small>${fmtTokens(chatContext.used)} of ${fmtTokens(chatContext.window)} tokens</small></div>` : ''}
+    <div class="ufoot">Updated ${agoText(usage.at)}. It refreshes each time Claude Code replies.${usage.isUsingOverage ? ' Using extra usage.' : ''}</div>`;
+}
+
+// ---------- working folder: where Claude Code / Codex read and edit files ----------
+
+const homeName = (p) => String(p || '~').replace(/\/+$/, '') || '/';
+const short = (p) => {
+  const s = homeName(p);
+  return s === '~' ? '~' : s.split('/').filter(Boolean).pop() || s;
+};
+
+function setFolder(p) {
+  p = homeName(String(p || '').trim() || '~');
+  settings.recentDirs = [p, ...(settings.recentDirs || []).filter((d) => d !== p)].slice(0, 6);
+  setSetting('cwd', p);
+  renderFolder();
+}
+
+function renderFolder() {
+  const p = settings.cwd || '~';
+  if (document.activeElement !== $('cwd')) $('cwd').value = p;
+  $('dirName').textContent = short(p);
+  $('dirChip').title = `Working folder: ${p}\nClick to change`;
+  $('dirChip').parentElement.hidden = $('cwdField').hidden;
+  $('recentDirs').innerHTML = (settings.recentDirs || []).map((d) => `<option value="${esc(d)}"></option>`).join('');
+}
+
+function renderDirMenu() {
+  const cur = settings.cwd || '~';
+  const dirs = [cur, ...(settings.recentDirs || []).filter((d) => d !== cur)].slice(0, 6);
+  $('dirMenu').innerHTML = `<div class="mhead">Working folder</div>${dirs.map((d) => `<button class="item${d === cur ? ' cur' : ''}" data-d="${esc(d)}"><span class="ico">${icon('folder')}</span><span><span class="t">${esc(short(d))}</span><span class="d">${esc(d)}</span></span><span class="check">${icon('check')}</span></button>`).join('')}
+    <button class="item" data-a="pick"><span class="ico">${icon('plus')}</span><span><span class="t">Choose folder…</span><span class="d">Opens your system’s folder picker</span></span></button>`;
+  $('dirMenu').querySelectorAll('[data-d]').forEach((b) => b.addEventListener('click', () => {
+    closeMenus();
+    if (b.dataset.d !== cur) {
+      setFolder(b.dataset.d);
+      toast(`Working in ${short(b.dataset.d)}`);
+    }
+  }));
+  $('dirMenu').querySelector('[data-a="pick"]').addEventListener('click', () => {
+    closeMenus();
+    chooseFolder();
+  });
+}
+
+async function chooseFolder() {
+  toast('Pick a folder in the dialog…', 2500);
+  const id = `pick${Date.now()}`;
+  port?.postMessage({ type: 'pick_folder', sid, id, current: settings.cwd || '~' });
+  const picked = await new Promise((resolve) => {
+    hostWaits.set(id, resolve);
+    setTimeout(() => hostWaits.delete(id) && resolve(null), 10 * 60 * 1000);
+  });
+  if (!picked) return;
+  setFolder(picked);
+  toast(`Working in ${short(picked)}`);
+}
+
 function closeMenus() {
-  for (const id of ['agentMenu', 'modeMenu', 'slash']) $(id).hidden = true;
+  for (const id of ['agentMenu', 'modeMenu', 'slash', 'usageMenu', 'dirMenu']) $(id).hidden = true;
   $('agentBtn').setAttribute('aria-expanded', 'false');
 }
 
@@ -1216,7 +1517,7 @@ function commands() {
     { name: 'save', desc: 'Save this chat’s browser steps as a workflow: /save name', icon: 'bookmark', run: () => fill('/save ') },
     { name: 'skill', desc: 'Have the AI write a reusable skill for this task: /skill name', icon: 'spark', run: () => fill('/skill ') },
   );
-  const user = (settings.shortcuts || []).map((s) => ({ name: s.name, desc: s.prompt, icon: 'wand', run: () => send(s.prompt) }));
+  const user = (settings.shortcuts || []).map((s) => ({ name: s.name, desc: s.prompt, icon: 'wand', run: () => send(s.prompt, `/${s.name}`) }));
   const flows = workflows.map((w) => ({ name: w.name, desc: `Replay ${w.steps.length} steps, no AI${w.title ? ` · ${w.title}` : ''}`, icon: 'play', run: () => runWorkflow(w.name) }));
   return [...flows, ...user, ...builtins];
 }
@@ -1837,7 +2138,8 @@ function connect() {
       renderAgentUI();
     } else if (msg.type === 'bg_update') {
       updateBgTask(msg);
-    } else if (msg.type === 'voice_fixed' || msg.type === 'suggested') {
+    } else if (msg.type === 'voice_fixed' || msg.type === 'suggested' || msg.type === 'folder_picked') {
+      if (msg.error) toast(msg.error, 3000);
       hostWaits.get(msg.id)?.(msg.text);
       hostWaits.delete(msg.id);
     } else if (msg.type === 'queue') {
@@ -1876,7 +2178,9 @@ function newChat() {
   openChat(crypto.randomUUID());
 }
 
-async function send(text) {
+// A saved prompt (a /skill write-up, a shortcut saved in the browser) goes to the AI in full,
+// but the chat shows only the command you typed, as `label`.
+async function send(text, label) {
   text = String(text || '').trim();
   if (!text && !attachments.length) return;
   let m;
@@ -1885,10 +2189,19 @@ async function send(text) {
     port?.postMessage({ type: 'save_workflow', sid, name: m[1], since: 0 });
     return fill('');
   }
-  if ((m = /^\/skill\s+([\w-]+)$/.exec(text))) text = skillPrompt(m[1]);
-  else if ((m = /^\/([\w-]+)$/.exec(text)) && workflows.some((w) => w.name === m[1])) {
-    fill('');
-    return runWorkflow(m[1]);
+  if ((m = /^\/skill\s+([\w-]+)$/.exec(text))) {
+    label = text;
+    text = skillPrompt(m[1]);
+  } else if ((m = /^\/([\w-]+)$/.exec(text))) {
+    if (workflows.some((w) => w.name === m[1])) {
+      fill('');
+      return runWorkflow(m[1]);
+    }
+    const sc = (settings.shortcuts || []).find((x) => x.name === m[1]);
+    if (sc) {
+      label = text;
+      text = sc.prompt;
+    }
   }
   if (!text) text = 'What do you see in this image?';
   const tab = await targetTab();
@@ -1896,7 +2209,7 @@ async function send(text) {
   const images = attachments.map(({ mediaType, data }) => ({ mediaType, data }));
   const thumbs = attachments.map((a) => a.thumb);
   if (images.length && settings.agent === 'terminal') toast('Images are not sent to a terminal AI');
-  port?.postMessage({ type: 'send', sid, kind: settings.agent, text, tabId: tab?.id, tabIds, cwd: settings.cwd || '~', mode: settings.mode, model: currentModel(), ollamaUrl: settings.ollamaUrl, images, thumbs });
+  port?.postMessage({ type: 'send', sid, kind: settings.agent, text, label: label || undefined, tabId: tab?.id, tabIds, cwd: settings.cwd || '~', mode: settings.mode, model: currentModel(), ollamaUrl: settings.ollamaUrl, images, thumbs });
   input.value = '';
   attachments = [];
   mentions = [];
@@ -2015,6 +2328,14 @@ async function init() {
     toggleMenu('modeMenu');
   });
   $('historyBtn').addEventListener('click', () => openDrawer('historyDrawer'));
+  $('usageBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    renderUsageMenu();
+    toggleMenu('usageMenu');
+  });
+  usage = (await chrome.storage.local.get('claudeUsage')).claudeUsage || null;
+  renderUsage();
+  setInterval(renderUsage, 60000); // reset countdowns, and a window that has reset
   $('settingsBtn').addEventListener('click', () => openDrawer('settingsDrawer'));
   $('newChat').addEventListener('click', newChat);
   document.addEventListener('click', (e) => {
@@ -2035,7 +2356,15 @@ async function init() {
     $('model').focus();
   });
   $('model').addEventListener('change', () => setModel($('model').value.trim()));
-  for (const id of ['cwd', 'ollamaUrl']) $(id).addEventListener('change', () => setSetting(id, $(id).value.trim()));
+  $('ollamaUrl').addEventListener('change', () => setSetting('ollamaUrl', $('ollamaUrl').value.trim()));
+  $('cwd').addEventListener('change', () => setFolder($('cwd').value));
+  $('cwdPick').addEventListener('click', chooseFolder);
+  $('dirChip').addEventListener('click', (e) => {
+    e.stopPropagation();
+    renderDirMenu();
+    toggleMenu('dirMenu');
+  });
+  renderFolder();
   $('shortcutForm').addEventListener('submit', (e) => {
     e.preventDefault();
     const name = $('scName').value.trim().replace(/^\//, '');
@@ -2129,7 +2458,7 @@ async function init() {
     if (voice) stopVoice(false);
     else if (polish) cancelPolish(true);
     else if (!$('lightbox').hidden) $('lightbox').hidden = true;
-    else if (!$('slash').hidden || !$('agentMenu').hidden || !$('modeMenu').hidden) closeMenus();
+    else if (['slash', 'agentMenu', 'modeMenu', 'usageMenu', 'dirMenu'].some((id) => !$(id).hidden)) closeMenus();
     else if (!$('historyDrawer').hidden || !$('settingsDrawer').hidden) closeDrawers();
     else if (busy) port?.postMessage({ type: 'stop', sid });
     else return;
@@ -2138,11 +2467,16 @@ async function init() {
 
   workflows = (await chrome.storage.local.get('workflows')).workflows || [];
   chrome.storage.onChanged.addListener((ch) => {
+    if (ch.claudeUsage) {
+      usage = ch.claudeUsage.newValue || null;
+      renderUsage();
+    }
     if (!ch.workflows) return;
     workflows = ch.workflows.newValue || [];
     if (!$('settingsDrawer').hidden) renderWorkflows();
   });
 
+  $('appVersion').textContent = `AI in Chrome v${chrome.runtime.getManifest().version}`;
   renderAgentUI();
   await showTab();
   await refreshTabs();

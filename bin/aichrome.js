@@ -310,7 +310,7 @@ async function execute(argv, callTool) {
   }
   Object.assign(args, opts);
   if (tab != null) args.tabId = tab;
-  if (outFile && ['gif_creator', 'network_export', 'network_request', 'http_request'].includes(tool)) args.save_path = outFile;
+  if (outFile && ['gif_creator', 'network_export', 'network_request', 'http_request', 'save_image', 'javascript_tool'].includes(tool)) args.save_path = outFile;
 
   const res = await callTool(tool, args);
   if (res.text) console.log(res.text);

@@ -1,6 +1,9 @@
 // Tool definitions (MCP schemas). Names and `computer` actions mirror Claude in Chrome.
 const tabId = { type: 'number', description: 'Tab ID. Defaults to the current AI tab, else the active tab.' };
 const coordinate = { type: 'array', items: { type: 'number' }, minItems: 2, maxItems: 2, description: '[x, y] in screenshot pixels' };
+const selector = { type: 'string', description: 'CSS selector, instead of ref (no find call needed)' };
+const label = { type: 'string', description: 'Visible text or accessible name of the element, instead of ref, e.g. "Update Post"' };
+const snapshot = { type: 'boolean', description: 'Return the main content\'s controls with refs (default true)' };
 
 export const TOOLS = [
   {
@@ -10,8 +13,8 @@ export const TOOLS = [
   },
   {
     name: 'tabs_create',
-    description: 'Open a new tab in the "AI" tab group and make it the current tab. It opens in the background, so the user keeps working undisturbed.',
-    inputSchema: { type: 'object', properties: { url: { type: 'string', description: 'URL to open (optional)' } } },
+    description: 'Open a new tab in the "AI" tab group and make it the current tab. It opens in the background, so the user keeps working undisturbed. Returns the page\'s controls with refs.',
+    inputSchema: { type: 'object', properties: { url: { type: 'string', description: 'URL to open (optional)' }, snapshot } },
   },
   {
     name: 'tabs_select',
@@ -25,32 +28,43 @@ export const TOOLS = [
   },
   {
     name: 'navigate',
-    description: 'Navigate a tab to a URL and wait for it to load. Use "back", "forward" or "reload" for history. On one of the user\'s own tabs (outside the AI group) this opens the URL in a new AI tab instead, leaving theirs as it was.',
-    inputSchema: { type: 'object', properties: { url: { type: 'string' }, tabId }, required: ['url'] },
+    description: 'Navigate a tab to a URL and wait for it to load; returns the page\'s controls with refs, so read_page is rarely needed. ' +
+      'Use "back", "forward" or "reload" for history. On one of the user\'s own tabs (outside the AI group) this opens the URL in a new AI tab ' +
+      'instead (a copy of the user\'s tab for same-site URLs, so logins kept in sessionStorage carry over).',
+    inputSchema: { type: 'object', properties: { url: { type: 'string' }, snapshot, tabId }, required: ['url'] },
   },
   {
     name: 'computer',
     description:
       'Use mouse and keyboard on a tab and take screenshots. Actions: screenshot, left_click, right_click, double_click, ' +
-      'triple_click, hover, left_click_drag, type, key, scroll, scroll_to, wait, zoom. Coordinates are pixels in the ' +
-      'latest screenshot; alternatively pass a ref from read_page/find. Take a screenshot first to see the page.',
+      'triple_click, hover, left_click_drag, type, key, scroll, scroll_to, wait, wait_for, zoom. Target an element by ref (read_page/find), ' +
+      'label (its visible text) or selector, or by coordinate in the latest screenshot. Clicks (and Enter/Escape) report what changed: ' +
+      'navigation (with the new page\'s controls), dialogs, messages, a checkbox\'s state, or "No visible change", so a follow-up screenshot is ' +
+      'usually unnecessary. wait_for waits until text/selector appears (gone:true: disappears) or the URL contains url, up to duration seconds.',
     inputSchema: {
       type: 'object',
       properties: {
         action: {
           type: 'string',
           enum: ['screenshot', 'left_click', 'right_click', 'double_click', 'triple_click', 'hover', 'left_click_drag',
-            'type', 'key', 'scroll', 'scroll_to', 'wait', 'zoom'],
+            'type', 'key', 'scroll', 'scroll_to', 'wait', 'wait_for', 'zoom'],
         },
         coordinate,
+        label,
+        selector: { ...selector, description: 'CSS selector instead of ref; wait_for: wait for it to be visible' },
         start_coordinate: { ...coordinate, description: 'Drag start [x, y] (left_click_drag)' },
         ref: { type: 'string', description: 'Element ref (e.g. ref_12) from read_page/find, instead of coordinate' },
-        text: { type: 'string', description: 'Text to type, or keys for "key" (e.g. "Enter", "cmd+a", "Tab Tab Enter")' },
+        text: { type: 'string', description: 'Text to type, keys for "key" (e.g. "Enter", "cmd+a", "Tab Tab Enter"), or text to wait for (wait_for)' },
+        submit: { type: 'boolean', description: 'type: press Enter after typing and report what happened' },
+        url: { type: 'string', description: 'wait_for: wait until the tab URL contains this' },
+        gone: { type: 'boolean', description: 'wait_for: wait for the text/selector to disappear instead' },
+        full: { type: 'boolean', description: 'screenshot: full resolution (default is a smaller, cheaper image)' },
+        annotate: { type: 'boolean', description: 'screenshot: label interactive elements with their ref numbers' },
         modifiers: { type: 'string', description: 'Modifier keys held during a click, e.g. "shift" or "cmd+shift"' },
         repeat: { type: 'number', description: 'Times to repeat the key sequence (key)' },
         scroll_direction: { type: 'string', enum: ['up', 'down', 'left', 'right'] },
         scroll_amount: { type: 'number', description: 'Scroll ticks (100px each), default 3' },
-        duration: { type: 'number', description: 'Seconds to wait (wait), max 30' },
+        duration: { type: 'number', description: 'Seconds to wait (wait, max 30), or the wait_for timeout (default 10, max 60)' },
         region: { type: 'array', items: { type: 'number' }, minItems: 4, maxItems: 4, description: '[x0, y0, x1, y1] to zoom into' },
         tabId,
       },
@@ -59,11 +73,13 @@ export const TOOLS = [
   },
   {
     name: 'read_page',
-    description: 'Accessibility-tree snapshot of the page with element refs (ref_N) usable in computer/form_input. filter "interactive" lists only controls.',
+    description: 'Accessibility-tree snapshot of the page with element refs (ref_N) usable in computer/form_input. filter "interactive" lists only controls; ' +
+      'scope "main" skips navigation, sidebars, header and footer. Hidden file inputs are listed too. Row buttons show their row text.',
     inputSchema: {
       type: 'object',
       properties: {
         filter: { type: 'string', enum: ['all', 'interactive'] },
+        scope: { type: 'string', enum: ['all', 'main'] },
         depth: { type: 'number', description: 'Max tree depth (default 15)' },
         ref_id: { type: 'string', description: 'Only return the subtree under this ref' },
         tabId,
@@ -72,16 +88,18 @@ export const TOOLS = [
   },
   {
     name: 'find',
-    description: 'Find elements whose role/name/attributes match the query words. Returns matching lines with refs.',
+    description: 'Find elements whose name/role/attributes match the query words; the element\'s own name counts most. Returns matching lines with refs. ' +
+      'Look up several things in one call by separating queries with " | ", e.g. "Save | cover image | Draft".',
     inputSchema: { type: 'object', properties: { query: { type: 'string' }, tabId }, required: ['query'] },
   },
   {
     name: 'form_input',
-    description: 'Set a form field value by ref: text inputs, textareas, selects (by value or label), checkboxes/radios (true/false).',
+    description: 'Set a form field value by ref, label or selector: text inputs, textareas, selects (by value or label), checkboxes/radios/switches (true/false). ' +
+      'Prefer this over clicking for toggles: it sets the real checkbox even behind a styled switch.',
     inputSchema: {
       type: 'object',
-      properties: { ref: { type: 'string' }, value: { type: ['string', 'number', 'boolean'] }, tabId },
-      required: ['ref', 'value'],
+      properties: { ref: { type: 'string' }, label, selector, value: { type: ['string', 'number', 'boolean'] }, tabId },
+      required: ['value'],
     },
   },
   {
@@ -91,8 +109,18 @@ export const TOOLS = [
   },
   {
     name: 'javascript_tool',
-    description: 'Evaluate JavaScript in the page (main world) and return the result. Top-level await is supported.',
-    inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'JavaScript code' }, tabId }, required: ['text'] },
+    description: 'Evaluate JavaScript in the page (main world) and return the result. Top-level await is supported. Results over max_chars are cut; ' +
+      'save_path writes the whole result to a file instead (a data: URL result is saved as the binary file it encodes).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'JavaScript code' },
+        save_path: { type: 'string', description: 'Write the result to this file or folder instead of returning it' },
+        max_chars: { type: 'number', description: 'Cut longer results (default 20000)' },
+        tabId,
+      },
+      required: ['text'],
+    },
   },
   {
     name: 'read_console_messages',
@@ -273,12 +301,13 @@ export const TOOLS = [
   {
     name: 'file_upload',
     description:
-      'Upload local files into an <input type="file"> by ref (find it with read_page/find; it is often hidden). ' +
-      'Do not click upload buttons: that opens a native file picker you cannot control. Max 10 MB total.',
+      'Upload local files into an <input type="file"> (read_page lists it even when hidden). A ref to the page\'s "Upload" button or label also works: ' +
+      'its file input is used. With no ref, the page\'s file input is used. Do not click upload buttons: that opens a native file picker you cannot control. Max 10 MB total.',
     inputSchema: {
       type: 'object',
       properties: {
-        ref: { type: 'string', description: 'ref of the file input' },
+        ref: { type: 'string', description: 'ref of the file input, or of its Upload button/label' },
+        selector,
         paths: { type: 'array', items: { type: 'string' }, description: 'Local file paths to upload' },
         files: {
           type: 'array',
@@ -293,8 +322,8 @@ export const TOOLS = [
   {
     name: 'upload_image',
     description:
-      'Upload an image to a file input (ref) or drop it onto a drop zone (coordinate, e.g. Google Docs). ' +
-      'The image is a screenshot by its image ID (shown in the screenshot result) or a local file path.',
+      'Upload an image to a file input (ref; an Upload button\'s ref means its file input) or drop it onto a drop zone (coordinate, e.g. Google Docs). ' +
+      'The image is an image ID (from screenshot or save_image) or a local file path. Reports whether a drop was accepted.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -303,6 +332,24 @@ export const TOOLS = [
         ref: { type: 'string' },
         coordinate,
         filename: { type: 'string' },
+        tabId,
+      },
+    },
+  },
+  {
+    name: 'save_image',
+    description:
+      'Save an image shown on a page (img, including blob: and generated images; canvas; video frame; CSS background) as an image ID. ' +
+      'Pass that to upload_image in any tab: e.g. take an AI-generated image from one site and upload it on another in two calls. ' +
+      'save_path also writes it to a file. With no ref/label/selector, the first image is used.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        ref: { type: 'string', description: 'ref of the image (or an element containing it)' },
+        label,
+        selector,
+        save_path: { type: 'string', description: 'Also save it to this file or folder' },
+        filename: { type: 'string', description: 'File name without extension (with save_path to a folder)' },
         tabId,
       },
     },

@@ -4,7 +4,7 @@
 
 **Claude in Chrome for any AI you already use.** Your terminal AI (Claude Code, Codex, or any MCP client) drives your **real, logged-in Chrome** from a side panel, the terminal, or MCP. No extension login, no API key, no blocked sites, MIT open source.
 
-![License: MIT](https://img.shields.io/badge/license-MIT-orange) ![Version](https://img.shields.io/badge/version-0.3.0-blue) ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey) ![Node](https://img.shields.io/badge/node-%E2%89%A520-green) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
+![License: MIT](https://img.shields.io/badge/license-MIT-orange) ![Version](https://img.shields.io/badge/version-0.4.1-blue) ![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey) ![Node](https://img.shields.io/badge/node-%E2%89%A520-green) ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
 
 ```
 side panel / aichrome CLI / any MCP client ──► local bridge (socket or named pipe) ──► native host (started by Chrome) ──► extension ──► DevTools Protocol ──► your tab
@@ -246,7 +246,7 @@ Pick the AI from the menu at the top. The panel shows its work as it goes:
 - **Leaves your tabs alone:** by default the AI works in its own purple "AI" tab group. Tabs it opens stay in the background, `tabs_select` doesn't bring a tab to the front, and `navigate` on one of your tabs opens a new AI tab instead, so you can keep using Chrome while it works. It still reads the tab you're on and acts on it when you ask. Settings › Tabs › "Can use my tabs" switches back to the old behavior.
 - **Plans:** when the AI makes a to-do list (Claude's TodoWrite or Codex's plan), it appears as a checklist that updates as the work goes.
 - **Answers:** Markdown with tables, quotes and code blocks; each code block and answer has a copy button.
-- **Permissions:** in "Ask before acting" mode, a card describes the action (for example "Click “Checkout” button", on example.com) with Allow once, Always allow and Deny. "Act without asking" covers browser actions, web search/fetch and file edits; shell commands still ask. With Claude Code, a message you send while it works reaches it at its next step, as in the terminal; other AIs get it when they finish.
+- **Permissions:** in "Ask before acting" mode, a card describes the action (for example "Click “Checkout” button", on example.com) with Allow once, Always allow and Deny. "Act without asking" covers browser actions, web search/fetch, reading and editing files, and shell commands that only read (`ls`, `cat`, `find`, `grep`, … with no pipes or redirects); other shell commands still ask. With Claude Code, a message you send while it works reaches it at its next step, as in the terminal; other AIs get it when they finish.
 - **Subagents:** when Claude hands work to a subagent, its step shows what the subagent is doing live; click it to see every step and message the subagent produced.
 - **Suggested reply:** each answer ends with the reply you're most likely to send next, shown in the empty box; press Tab to use it; clicking the box just puts the cursor there. The chat's AI writes it as part of its answer (no extra call); if it leaves it out, a quick side model (Chrome's built-in AI, Ollama or Claude Haiku) writes one.
 

@@ -31,9 +31,9 @@ To use it as MCP in Claude Code, run `claude mcp add --scope user ai-in-chrome -
 ## 2. Core loop: look, act, check
 
 1. **Get a tab.** Use `aichrome open <url>` (`tabs_create`) for new work. It opens in the purple **"AI" tab group** and becomes the *current tab*. Don't take over the user's other tabs unless asked; `aichrome tabs` (`tabs_context`) lists them.
-2. **Look.** Run `aichrome read interactive` (`read_page` with `filter: "interactive"`). Lines look like `button "Send" [ref_12]`. Use `aichrome read` (filter `all`) when you need text or structure, and `aichrome shot` (`computer` screenshot) when layout or visuals matter.
-3. **Act by ref when you can:** `aichrome click ref_12`, `aichrome fill ref_5 "value"`, `aichrome computer action=type ref=ref_5 text="hi"`. Refs are more reliable than pixel coordinates.
-4. **Check.** Re-read or take a screenshot to confirm the action worked before moving on.
+2. **Look.** `navigate` and `tabs_create` already return the main content's controls with refs, so you often don't need another call. Otherwise run `aichrome read interactive` (`read_page` with `filter: "interactive"`, and `scope: "main"` to skip sidebars and nav). Lines look like `button "Send" [ref_12]`; buttons in table rows show their row, e.g. `button "Edit" [ref_9] (row: "my-post / draft")`. Use `aichrome read` (filter `all`) when you need text or structure, and `aichrome shot` (`computer` screenshot) when layout or visuals matter. `annotate: true` labels the screenshot with ref numbers.
+3. **Act by ref, or by visible text:** `aichrome click ref_12`, `aichrome fill ref_5 "value"`, or skip the lookup with `computer action=left_click label="Update Post"` / `selector="#save"` (also works for `form_input`, `file_upload`, `scroll_to`). Look up several things at once with `find "Save | Draft | cover image"`.
+4. **Check by reading the result.** Clicks, `key Enter/Escape` and `type … submit=true` report what changed: navigation (with the new page's controls), opened/closed dialogs, toast messages, a checkbox's new state, or `No visible change`. Take a screenshot only if that isn't enough. To wait for something slow (AI generation, uploads), use `computer action=wait_for text="Done"` (or `selector=…`, `url=…`, `gone=true`) instead of fixed `wait`s.
 
 Commands without `--tab` / `tabId` act on the current tab, otherwise on the active tab.
 
@@ -43,9 +43,12 @@ Commands without `--tab` / `tabId` act on the current tab, otherwise on the acti
 - **Lines marked `(offscreen)`** are often hidden duplicates of widgets; chat apps like LinkedIn keep invisible copies of message boxes. Prefer the copy without that marker.
 - **Coordinates** (`click 640 300`, `coordinate: [x, y]`) are pixels in the **latest screenshot**. Take a new screenshot after scrolling or navigating.
 - **Typing goes to the focused element.** Click the field first, or pass a ref: `computer action=type ref=ref_5 text=…`. Run `aichrome key Enter` to submit. Keys use `+` and spaces: `cmd+a`, `shift+Tab`, `"Tab Tab Enter"`.
-- **Selects, checkboxes, radios:** use `fill` / `form_input` (`value` = option label or value, or `true`/`false`).
-- **File uploads: never click "Choose file" or upload buttons.** That opens a native file picker you can't control. Find the `<input type=file>` (it shows as `button [ref_N] type="file"`, often hidden; use `read`, not `read interactive`, if it's missing) and run `aichrome upload ref_N /path/a.pdf /path/b.jpg`. Max 10 MB total.
-- **Images into drop zones** (Google Docs and similar): `aichrome upload_image path=/img.png "coordinate=[x,y]"`, or `imageId=shot_N` to reuse a screenshot (the ID appears in each screenshot result).
+- **Selects, checkboxes, radios, switches:** use `fill` / `form_input` (`value` = option label or value, or `true`/`false`), not clicks. It sets the real checkbox even behind a styled toggle, and a `label=` works too.
+- **File uploads: never click "Choose file" or upload buttons.** That opens a native file picker you can't control. File inputs are always listed, even hidden: `button [ref_N] type="file" (file input, hidden: use with file_upload)`. Run `aichrome upload ref_N /path/a.pdf /path/b.jpg`. A ref to the page's "Upload" button also works (its file input is used), and with no ref the page's only file input is used. Max 10 MB total.
+- **Images between sites** (e.g. an AI-generated image to a CMS): `save_image` (ref, label or selector of the img; `blob:` images work) returns an `imageId`; then `upload_image imageId=shot_N ref=…` in the other tab. No base64 or temporary files.
+- **Images into drop zones** (Google Docs and similar): `aichrome upload_image path=/img.png "coordinate=[x,y]"`, or `imageId=shot_N` to reuse a screenshot. The result says whether the page accepted the drop.
+- **Big JavaScript results:** `javascript_tool` cuts results at 20k chars; pass `save_path` to write the whole result to a file (a `data:` URL result is saved as the binary it encodes).
+- **Logged-in admin apps:** opening a same-site URL from the user's tab makes a background copy of that tab, so logins kept in sessionStorage carry over. If a new tab still lands on a login page, work in the user's tab with `tabId` rather than logging in again.
 - **JavaScript dialogs** (alert/confirm) are accepted automatically and logged; `aichrome console` shows them.
 - **Unsupported pages:** `chrome://` and other browser pages can't be controlled. Open a normal tab instead.
 - **Paste (`cmd+v`) may not work.** Type the text instead.
