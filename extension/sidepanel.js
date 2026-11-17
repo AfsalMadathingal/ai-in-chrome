@@ -15,13 +15,14 @@ let replaying = false;
 let available = {};
 let terminal = { listening: false, recent: false };
 let lastModel = '';
+let lastSession = null; // { id, agent, cwd } of this chat's Claude Code / Codex session
 let attachments = []; // { mediaType, data, thumb }
 let mentions = []; // tabs picked with #: the AI works on the first, and is told about all of them
 let openTabs = [];
 let chatList = [];
 let workflows = []; // saved replays: { name, title, steps, created }
 let lastUserTs = 0;
-let settings = { agent: 'claude', mode: 'ask', cwd: '~', models: {}, ollamaUrl: '', theme: 'system', voiceFix: true, tabs: 'group', shortcuts: [] };
+let settings = { agent: 'claude', mode: 'ask', cwd: '~', models: {}, ollamaUrl: '', theme: 'system', voiceFix: true, tabs: 'group', groupCleanup: 0, shortcuts: [] };
 
 // Per-render state for the assistant turn being built.
 let turn = null;
@@ -291,7 +292,12 @@ function markdown(src) {
 
 // ---------- tool descriptions ----------
 
-const strip = (name) => String(name || '').replace(/^mcp__ai-in-chrome__/, '').replace(/^ai-in-chrome__/, '').replace(/^mcp__[^_]+__/, '');
+const strip = (name) => String(name || '').replace(/^mcp__ai-in-chrome__/, '').replace(/^ai-in-chrome__/, '').replace(/^mcp__.+?__/, '');
+// "mcp__claude_ai_Vodloader__get_stats" -> "Vodloader"; '' for built-in and AI in Chrome tools.
+const mcpServer = (name) => {
+  const m = /^mcp__(.+?)__/.exec(String(name || ''));
+  return m && m[1] !== 'ai-in-chrome' ? m[1].replace(/^claude_ai_/, '').replace(/[_-]+/g, ' ') : '';
+};
 
 function parseInput(s) {
   if (s && typeof s === 'object') return s;
@@ -406,7 +412,8 @@ function describe(name, inputStr) {
     case 'sidepanel_reply': return { label: 'Reply', verb: 'Writing', icon: 'spark', done: 'replied' };
     default: {
       const arg = Object.values(o).find((v) => typeof v === 'string');
-      return { label: `${esc(humanize(short))}${arg ? ` ${c(arg, 40)}` : ''}`, verb: humanize(short), icon: 'bolt', done: humanize(short).toLowerCase() };
+      const server = mcpServer(name);
+      return { label: `${esc(humanize(short))}${arg ? ` ${c(arg, 40)}` : ''}${server ? ` <span class="srv">· ${esc(server)}</span>` : ''}`, verb: humanize(short), icon: 'bolt', done: humanize(short).toLowerCase() };
     }
   }
 }
@@ -822,7 +829,8 @@ function renderPermission(ev) {
   closeStream();
   const d = describe(ev.tool, ev.input);
   // Only browser actions happen "on" a site; web search, shell and file tools don't.
-  const browserTool = ev.browser ?? !/^[A-Z]/.test(ev.tool || '');
+  const server = mcpServer(ev.tool);
+  const browserTool = ev.browser ?? (!/^[A-Z]/.test(ev.tool || '') && (!server || /chrome/i.test(server)));
   const where = ev.key && ev.key.includes(':') && /\./.test(ev.key) ? ev.key.split(':').slice(1).join(':') : browserTool ? currentHost : '';
   const card = add(el('div', 'perm'), turn);
   card.innerHTML = `<div class="q"><span class="si">${icon(d.icon)}</span><div><b>${d.label}</b><small>${ev.agent ? `@${esc(ev.agent)} (background) wants to do this. ` : ''}Allow this${where ? ` on ${esc(where)}` : ''}?</small></div></div>
@@ -1038,6 +1046,8 @@ function render(ev) {
       return add(el('div', 'error', `${icon('alert')}<span></span>`)).querySelector('span').append(ev.message || 'Error');
     case 'session':
       if (ev.model) lastModel = ev.model;
+      if (ev.id && (ev.agent === 'claude' || ev.agent === 'codex')) lastSession = { id: ev.id, agent: ev.agent, cwd: ev.cwd || '' };
+      $('termWrap').hidden = !lastSession;
       return;
     case 'busy':
       if (ev.on) busySince = ev.ts || Date.now();
@@ -1060,6 +1070,8 @@ function resetLog() {
   refNames.clear();
   permEls.clear();
   lastModel = '';
+  lastSession = null;
+  $('termWrap').hidden = true;
 }
 
 // ---------- empty state ----------
@@ -1223,6 +1235,7 @@ function renderAgentUI() {
   renderThemes();
   $('voiceFixSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', b.dataset.v === String(settings.voiceFix !== false)));
   $('tabsSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', b.dataset.v === (settings.tabs || 'group')));
+  $('cleanupSeg').querySelectorAll('button').forEach((b) => b.classList.toggle('cur', Number(b.dataset.v) === (Number(settings.groupCleanup) || 0)));
 
   const h = $('agentHint');
   if (settings.agent === 'terminal') h.innerHTML = 'In any terminal AI connected to the <code>ai-in-chrome</code> MCP server, say: <code>listen to the AI in Chrome side panel</code>.';
@@ -1401,6 +1414,23 @@ function renderDirMenu() {
     closeMenus();
     chooseFolder();
   });
+}
+
+const sq = (v) => (/^[\w@%+=:,./~-]+$/.test(v) ? v : `'${v.replace(/'/g, `'\\''`)}'`);
+async function continueInTerminal(action) {
+  const s = lastSession;
+  if (!s) return toast('No session yet. Send a message first.');
+  if (action === 'id') return copy(s.id);
+  const dir = s.cwd || settings.cwd || '~';
+  const run = s.agent === 'claude' ? `claude --resume ${s.id}` : `codex resume ${s.id}`;
+  if (action === 'cmd') return copy(`cd ${/^~(\/|$)/.test(dir) ? `~${dir.length > 2 ? '/' + sq(dir.slice(2)) : ''}` : sq(dir)} && ${run}`);
+  const id = `term${Date.now()}`;
+  port?.postMessage({ type: 'open_terminal', sid, id, kind: s.agent, sessionId: s.id, cwd: dir });
+  const ok = await new Promise((resolve) => {
+    hostWaits.set(id, resolve);
+    setTimeout(() => hostWaits.delete(id) && resolve(null), 20000);
+  });
+  if (ok) toast('Opened in Terminal. Your next message here picks up from there.', 3000);
 }
 
 async function chooseFolder() {
@@ -2138,7 +2168,7 @@ function connect() {
       renderAgentUI();
     } else if (msg.type === 'bg_update') {
       updateBgTask(msg);
-    } else if (msg.type === 'voice_fixed' || msg.type === 'suggested' || msg.type === 'folder_picked') {
+    } else if (msg.type === 'voice_fixed' || msg.type === 'suggested' || msg.type === 'folder_picked' || msg.type === 'terminal_opened') {
       if (msg.error) toast(msg.error, 3000);
       hostWaits.get(msg.id)?.(msg.text);
       hostWaits.delete(msg.id);
@@ -2328,6 +2358,14 @@ async function init() {
     toggleMenu('modeMenu');
   });
   $('historyBtn').addEventListener('click', () => openDrawer('historyDrawer'));
+  $('termBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleMenu('termMenu', $('termBtn'));
+  });
+  $('termMenu').querySelectorAll('[data-a]').forEach((b) => b.addEventListener('click', () => {
+    closeMenus();
+    continueInTerminal(b.dataset.a);
+  }));
   $('usageBtn').addEventListener('click', (e) => {
     e.stopPropagation();
     renderUsageMenu();
@@ -2349,6 +2387,7 @@ async function init() {
   $('modeSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('mode', b.dataset.v)));
   $('voiceFixSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('voiceFix', b.dataset.v === 'true')));
   $('tabsSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('tabs', b.dataset.v)));
+  $('cleanupSeg').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => setSetting('groupCleanup', Number(b.dataset.v))));
   $('cwd').value = settings.cwd;
   $('modelSelect').addEventListener('change', () => {
     if ($('modelSelect').value !== CUSTOM) return setModel($('modelSelect').value);

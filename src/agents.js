@@ -152,6 +152,7 @@ export class Agents {
       if (msg.type === 'agent_voice_fix') return this.voiceFix(msg);
       if (msg.type === 'agent_suggest') return this.suggest(msg);
       if (msg.type === 'agent_pick_folder') return this.pickFolder(msg);
+      if (msg.type === 'agent_open_terminal') return this.openTerminal(msg);
     } catch (e) {
       this.emit(sid, { t: 'error', message: e.message });
       this.emit(sid, { t: 'busy', on: false });
@@ -235,6 +236,37 @@ export class Agents {
 
   // The likely next message, when the chat's AI didn't end its answer with one.
 // The system's folder dialog, so the panel gets a real path (a web page can't): macOS "choose folder", Linux zenity.
+  // Continue a side-panel chat in a real terminal: `claude --resume <id>` / `codex resume <id>` in the chat's folder.
+  openTerminal({ sid, id, kind, sessionId, cwd }) {
+    const reply = (error) => this.emit(sid, { t: 'terminal_opened', id, text: error ? null : 'ok', error });
+    const s = this.sessions.get(sid);
+    kind = s?.sessionId ? s.kind : kind;
+    sessionId = s?.sessionId || sessionId;
+    const dir = s?.cwd || expand(cwd || '~');
+    if (!['claude', 'codex'].includes(kind) || !/^[\w-]+$/.test(sessionId || '')) return reply('This chat has no Claude Code or Codex session to resume yet.');
+    if (!fs.existsSync(dir)) return reply(`Working folder does not exist: ${dir}`);
+    if (s?.busy) return reply('Still working. Wait for it to finish (or stop it) before moving to the terminal.');
+    // Free the session: the panel's next message resumes it again and picks up what happened in the terminal.
+    if (s?.proc) {
+      s.proc.kill();
+      s.proc = null;
+    }
+    const sq = (v) => `'${String(v).replace(/'/g, `'\\''`)}'`;
+    const mcp = kind === 'claude' ? ` --mcp-config ${sq(this.mcpConfig())}` : '';
+    const run = kind === 'claude' ? `claude --resume ${sessionId}${mcp}` : `codex resume ${sessionId}`;
+    const done = (err) => reply(err ? String(err.message).slice(0, 200) : undefined);
+    if (process.platform === 'darwin') {
+      const as = (v) => v.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const cmd = `cd ${sq(dir)} && ${run}`;
+      return execFile('osascript', ['-e', `tell application "Terminal" to do script "${as(cmd)}"`, '-e', 'tell application "Terminal" to activate'], { timeout: 15000 }, done);
+    }
+    if (IS_WINDOWS) {
+      const winRun = kind === 'claude' ? `claude --resume ${sessionId}` : run;
+      return execFile('cmd.exe', ['/c', 'start', '""', '/d', dir, 'cmd', '/k', winRun], { timeout: 15000, windowsHide: true }, done);
+    }
+    return execFile('x-terminal-emulator', ['-e', 'sh', '-c', `cd ${sq(dir)} && ${run}; exec $SHELL`], { timeout: 15000 }, (err) => done(err && new Error('No terminal found (x-terminal-emulator). Copy the command instead.')));
+  }
+
   pickFolder({ sid, id, current = '~' }) {
     const start = expand(current);
     const from = fs.existsSync(start) ? start : os.homedir();
@@ -341,7 +373,7 @@ export class Agents {
   onClaude(s, m) {
     if (m.type === 'system' && m.subtype === 'init') {
       s.sessionId = m.session_id;
-      return this.emit(s.sid, { t: 'session', id: m.session_id, model: m.model, agent: 'claude' });
+      return this.emit(s.sid, { t: 'session', id: m.session_id, model: m.model, agent: 'claude', cwd: s.cwd });
     }
     if (m.type === 'stream_event') {
       if (m.parent_tool_use_id) return; // a subagent's live text; its finished messages are shown under its step
@@ -426,7 +458,7 @@ export class Agents {
         }
         if (m.type === 'thread.started') {
           s.sessionId = m.thread_id;
-          this.emit(s.sid, { t: 'session', id: m.thread_id, agent: 'codex' });
+          this.emit(s.sid, { t: 'session', id: m.thread_id, agent: 'codex', cwd: s.cwd });
         } else if (m.type === 'item.started' || m.type === 'item.updated' || m.type === 'item.completed') {
           const it = m.item || {};
           if (it.type === 'todo_list') this.emit(s.sid, { t: 'todo', items: todoItems(it.items) });

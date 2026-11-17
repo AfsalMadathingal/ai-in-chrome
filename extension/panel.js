@@ -114,7 +114,7 @@ export async function emit(sid, ev) {
 // Events from the native host (headless Claude Code / Codex).
 export function onAgentEvent(sid, ev) {
   // Side results, not part of the chat.
-  if (ev.t === 'voice_fixed' || ev.t === 'suggested' || ev.t === 'folder_picked') return broadcast(sid, { type: ev.t, id: ev.id, text: ev.text, error: ev.error });
+  if (ev.t === 'voice_fixed' || ev.t === 'suggested' || ev.t === 'folder_picked' || ev.t === 'terminal_opened') return broadcast(sid, { type: ev.t, id: ev.id, text: ev.text, error: ev.error });
   // Plan usage belongs to the account, not the chat: every panel reads it from storage.
   if (ev.t === 'usage') return ev.info && chrome.storage.local.set({ claudeUsage: { ...ev.info, at: Date.now() } });
   emit(sid, ev);
@@ -145,6 +145,7 @@ chrome.runtime.onConnect.addListener((port) => {
       else if (msg.type === 'send_now') stop(msg.sid);
       else if (msg.type === 'voice_fix' && !deps.hostSend({ ...msg, type: 'agent_voice_fix' })) port.postMessage({ type: 'voice_fixed', id: msg.id, text: null });
       else if (msg.type === 'suggest' && !deps.hostSend({ ...msg, type: 'agent_suggest' })) port.postMessage({ type: 'suggested', id: msg.id, text: null });
+      else if (msg.type === 'open_terminal' && !deps.hostSend({ ...msg, type: 'agent_open_terminal' })) port.postMessage({ type: 'terminal_opened', id: msg.id, text: null, error: 'Native host not connected.' });
       else if (msg.type === 'pick_folder' && !deps.hostSend({ ...msg, type: 'agent_pick_folder' })) port.postMessage({ type: 'folder_picked', id: msg.id, text: null, error: 'Native host not connected.' });
       else if (msg.type === 'unqueue') {
         const c = await chat(msg.sid);

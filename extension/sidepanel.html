@@ -24,6 +24,16 @@
       </button>
       <div id="usageMenu" class="menu right usage-menu" hidden></div>
     </div>
+    <div class="picker" id="termWrap" hidden>
+      <button id="termBtn" class="icon" title="Continue in terminal" aria-label="Continue in terminal" aria-haspopup="menu">
+        <svg viewBox="0 0 24 24"><path d="m4 17 6-5-6-5M12 19h8"/></svg>
+      </button>
+      <div id="termMenu" class="menu right" role="menu" hidden>
+        <button class="item" data-a="open" role="menuitem">Continue in Terminal</button>
+        <button class="item" data-a="cmd" role="menuitem">Copy resume command</button>
+        <button class="item" data-a="id" role="menuitem">Copy session ID</button>
+      </div>
+    </div>
     <button id="historyBtn" class="icon" title="Chat history" aria-label="Chat history">
       <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>
     </button>
@@ -121,6 +131,14 @@
           <button data-v="mine">Can use my tabs</button>
         </div>
         <p class="hint">With its own group, tabs the AI opens go in the "AI" group in the background, and it never switches, focuses or navigates away your tabs. It still reads the tab you're on.</p>
+        <label class="field">Close the AI group when idle for</label>
+        <div class="seg" id="cleanupSeg">
+          <button data-v="0">Never</button>
+          <button data-v="5">5 min</button>
+          <button data-v="15">15 min</button>
+          <button data-v="60">1 hour</button>
+        </div>
+        <p class="hint">Closes every tab in the "AI" group once the AI hasn't used the browser for that long. It waits while you're viewing one of those tabs.</p>
       </section>
       <section>
         <h3>Voice</h3>

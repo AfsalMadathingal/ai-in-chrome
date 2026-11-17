@@ -28,9 +28,16 @@ function setCurrentTab(id) {
 // Where the AI works. 'group' (default): its own tabs in the AI group, opened in the background, so the tabs
 // you're using never switch, lose focus or get navigated away. 'mine': it may take over your tabs.
 let tabMode = 'group';
-chrome.storage.local.get('panelSettings').then((v) => (tabMode = v.panelSettings?.tabs || 'group'));
+// Close the AI group once the AI has been idle this many minutes (0 = never).
+let groupCleanup = 0;
+chrome.storage.local.get('panelSettings').then((v) => {
+  tabMode = v.panelSettings?.tabs || 'group';
+  groupCleanup = Number(v.panelSettings?.groupCleanup) || 0;
+});
 chrome.storage.onChanged.addListener((ch) => {
-  if (ch.panelSettings) tabMode = ch.panelSettings.newValue?.tabs || 'group';
+  if (!ch.panelSettings) return;
+  tabMode = ch.panelSettings.newValue?.tabs || 'group';
+  groupCleanup = Number(ch.panelSettings.newValue?.groupCleanup) || 0;
 });
 const ownTabs = () => tabMode !== 'mine';
 const attached = new Set();
@@ -97,7 +104,11 @@ function normalize(result) {
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 chrome.alarms.create('aichrome-reconnect', { periodInMinutes: 0.5 });
-chrome.alarms.onAlarm.addListener((a) => a.name === 'aichrome-reconnect' && connect());
+chrome.alarms.onAlarm.addListener((a) => {
+  if (a.name !== 'aichrome-reconnect') return;
+  connect();
+  cleanupIdleGroup().catch((e) => console.warn('[aichrome] group cleanup', e));
+});
 chrome.action.onClicked.addListener(() => { port?.disconnect(); port = null; connect(); });
 connect();
 
@@ -189,6 +200,7 @@ async function runBackgroundTool(sid, name, args) {
 async function runToolNow(name, args) {
   const fn = TOOLS[name];
   if (!fn) throw new Error(`Unknown tool "${name}". Available: ${Object.keys(TOOLS).join(', ')}`);
+  noteActivity();
   await noteRef(name, args);
   const mirror = onToolCall(name, args); // shows a terminal AI's activity in the side panel
   if (!mirror) return runRecorded(name, fn, args);
@@ -261,6 +273,11 @@ async function duplicateForAI(userTabId, url) {
 
 async function tabs_close({ tabId }) {
   if (tabId == null) throw new Error('tabId is required');
+  // Closing the last tab of a group leaves it saved in the bookmarks bar; ungrouping deletes it instead.
+  const t = await chrome.tabs.get(Number(tabId)).catch(() => null);
+  if (t && t.groupId > -1 && t.groupId === (await findGroup())?.id && (await chrome.tabs.query({ groupId: t.groupId })).length === 1) {
+    await chrome.tabs.ungroup(t.id).catch(() => {});
+  }
   await chrome.tabs.remove(Number(tabId));
   if (currentTab === Number(tabId)) setCurrentTab(null);
   return `Closed tab ${tabId}`;
@@ -1365,6 +1382,36 @@ async function addToGroup(tabId) {
   }
   const groupId = await chrome.tabs.group({ tabIds: [tabId] });
   await chrome.tabGroups.update(groupId, { title: GROUP_TITLE, color: 'purple', collapsed: false });
+}
+
+// ---------- idle group cleanup ----------
+
+let lastToolAt = null; // persisted so a service-worker restart doesn't forget the AI was active
+let lastToolSaved = 0;
+function noteActivity() {
+  lastToolAt = Date.now();
+  if (lastToolAt - lastToolSaved > 10000) {
+    lastToolSaved = lastToolAt;
+    chrome.storage.local.set({ lastToolAt });
+  }
+}
+
+async function cleanupIdleGroup() {
+  if (!groupCleanup) return;
+  if (lastToolAt == null) lastToolAt = (await chrome.storage.local.get('lastToolAt')).lastToolAt ?? null;
+  if (lastToolAt == null || Date.now() - lastToolAt < groupCleanup * 60000) return;
+  const group = await findGroup();
+  if (!group) return;
+  const tabs = await chrome.tabs.query({ groupId: group.id });
+  // Never pull a tab out from under you: wait while you're looking at one of them.
+  if (tabs.some((t) => t.active)) return;
+  // Ungroup first: Chrome keeps a *closed* group saved (the chip in the bookmarks bar), but an
+  // emptied-by-ungrouping group is deleted, saved copy included.
+  const ids = tabs.map((t) => t.id);
+  await chrome.tabs.ungroup(ids).catch(() => {});
+  await chrome.tabs.remove(ids);
+  lastToolAt = null;
+  chrome.storage.local.remove('lastToolAt');
 }
 
 function normalizeUrl(url) {

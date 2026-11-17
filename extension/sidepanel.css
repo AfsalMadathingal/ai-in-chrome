@@ -708,3 +708,4 @@ body.busy .send:not(.queue) .i-stop { display: block; }
 :root[data-theme^="code"] .md th { color: var(--syn-k); font-family: var(--mono); font-weight: 600; font-size: 12px; }
 :root[data-theme^="code"] .md hr { border-top-style: dashed; }
 :root[data-theme^="code"] .empty h1 { font-size: 20px; color: var(--syn-f); }
+.srv { color: var(--muted); font-weight: 400; }
